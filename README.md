@@ -93,7 +93,7 @@ pip install -r requirements.txt
 
 ### 6. Ensemble Model (Optional)
 
-- Use `ensemble.ipynb` to average flow predictions from baseline and enhanced models to test ensemble performance.
+- Use `ensemble.ipynb` to average flow predictions from baseline and enhanced models to test ensemble performance. Uses 7:3 weighting. 
 
 ---
 
