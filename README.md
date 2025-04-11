@@ -43,6 +43,7 @@ iUS_brain_shift/
 ├── train_and_generate_model.ipynb # Full LOOCV training pipeline
 ├── unet_explainability.ipynb  # Generates and saves 3D Grad-CAM volumes
 ├── visualization.ipynb        # 2D/3D overlay of Grad-CAM on ultrasound
+├── requirements.txt           # python package requirements
 ├── Dockerfile                 # For reproducibility (optional)
 ├── LICENSE
 └── README.md                  # You are here
