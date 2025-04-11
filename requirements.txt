@@ -1,0 +1,26 @@
+# Core
+torch>=1.12
+torchvision
+monai>=1.1.0
+
+# Data & Imaging
+numpy
+nibabel
+scipy
+pandas
+matplotlib
+opencv-python
+scikit-image
+
+# Visualization
+vedo
+itk
+napari
+
+# Jupyter support
+jupyter
+ipykernel
+
+# Optional / Nice to Have
+tqdm
+seaborn
