@@ -66,7 +66,7 @@ pip install -r requirements.txt
 ### 2. Train the Model (LOOCV)
 
 - Open `train_and_generate_model.ipynb` in Jupyter Notebook.
-- This notebook trains both Baseline and Enhanced 3D U-Nets on 12 patients and saves the model for the held-out patient.
+- This notebook trains both Baseline and Enhanced 3D U-Nets on 13 patients and saves the model for the held-out patient.
 
 ### 3. Test a Model
 
