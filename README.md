@@ -37,12 +37,15 @@ iUS_brain_shift/
 │   ├── unet3d.py              # Baseline 3D U-Net architecture
 │   ├── unet3d_new.py          # Enhanced 3D U-Net architecture
 │   └── utils.py               # Miscellaneous tools
+├── results/                   # Raw result files per model
+│   ├── unet3d_ensemble.xlsx   # results for ensemble
+│   ├── unet3d_new.xlsx        # results for model 2
+│   ├── unet3d_original.xlsx   # results for model 1/original
 ├── ensemble.ipynb             # Combines outputs from both models
 ├── model_testing.ipynb        # Evaluates a model on a single test patient
-├── statistics.ipynb           # Computes MAE, angular error, SD, IQR per patient
+├── statistics.ipynb           # Computes MAE, angular error, SD, IQR per patient based on results/~.xlsx
 ├── train_and_generate_model.ipynb # Full LOOCV training pipeline
 ├── unet_explainability.ipynb  # Generates and saves 3D Grad-CAM volumes
-├── visualization.ipynb        # 2D/3D overlay of Grad-CAM on ultrasound
 ├── requirements.txt           # python package requirements
 ├── Dockerfile                 # For reproducibility (optional)
 ├── LICENSE
