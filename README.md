@@ -7,6 +7,8 @@ This project presents a deep learning framework to estimate **intraoperative bra
 
 We evaluate two 3D U-Net architectures (baseline and enhanced) as well as their weighted ensemble, apply Grad-CAM explainability, and report extensive error metrics (MAE, angular deviation) using leave-one-out cross-validation (LOOCV) on 13 patients.
 
+The contents of this repository have been submitted for consideration to a scholarly journal and are subject to copyright protection. Unauthorized duplication or reproduction is prohibited.
+
 ---
 
 ## Repository Structure
