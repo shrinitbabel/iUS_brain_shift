@@ -1,7 +1,7 @@
 # iUS_brain_shift
 [<img src="https://img.shields.io/badge/maintenance%20status-actively%20developed-brightgreen">](https://github.com/shrinitbabel/iUS_brain_shift)
 [<img src="https://img.shields.io/badge/Language-python-FFD43B.svg">](https://www.python.org/)
-[<img src="https://img.shields.io/badge/License-MIT-lightblue.svg">](./MIT-LICENSE.txt)
+[<img src="https://img.shields.io/badge/License-MIT-lightblue.svg">](./LICENSE)
 
 This project presents a deep learning framework to estimate **intraoperative brain shift** using paired pre- and post-resection intraoperative ultrasound (iUS) volumes from the **BITE dataset**. The system predicts a dense 3D deformation field and is supervised with sparse anatomical landmarks for robust, interpretable shift estimation.
 
