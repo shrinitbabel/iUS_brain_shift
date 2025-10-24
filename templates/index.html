@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>iUS Brain Shift — Results</title>
+        <style>
+            body {
+                font-family: Inter, system-ui, Arial;
+                margin: 0;
+                background: #0b1020;
+                color: #e7e9ef;
+            }
+
+            .wrap {
+                max-width: 980px;
+                margin: 40px auto;
+                padding: 24px;
+            }
+
+            .card {
+                background: #121933;
+                border: 1px solid #1d2647;
+                border-radius: 16px;
+                padding: 24px;
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+            }
+
+            .grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 18px;
+            }
+
+            img {
+                width: 100%;
+                height: auto;
+                border-radius: 12px;
+                border: 1px solid #27335e;
+            }
+
+            a.btn {
+                display: inline-block;
+                margin-top: 14px;
+                background: #4159d0;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 10px;
+                text-decoration: none;
+                font-weight: 600;
+            }
+
+            table {
+                border-collapse: collapse;
+                margin-top: 10px;
+            }
+
+            td {
+                padding: 6px 10px;
+                border-bottom: 1px solid #263059;
+                color: #bcd;
+            }
+        </style>
+    </head>
+
+    <body>
+        <div class="wrap">
+            <div class="card">
+                <h2>Run Complete</h2>
+
+                <table>
+                    <tr>
+                        <td>Run ID</td>
+                        <td>{{ run_id }}</td>
+                    </tr>
+                    <tr>
+                        <td>Mean shift (voxel-units)</td>
+                        <td>{{ '%.6f'|format(metrics.mean_shift) }}</td>
+                    </tr>
+                    <tr>
+                        <td>Max shift (voxel-units)</td>
+                        <td>{{ '%.6f'|format(metrics.max_shift) }}</td>
+                    </tr>
+
+                    {% if lm_stats %}
+                    <tr>
+                        <td>Landmarks</td>
+                        <td>
+                            {% if lm_stats.error %}
+                            Error: {{ lm_stats.error }}
+                            {% else %}
+                            {{ lm_stats.n_landmarks }} points detected
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endif %}
+                </table>
+
+                <div class="grid" style="margin-top:18px">
+                    <div>
+                        <h3>Warped Pre (center slices)</h3>
+                        <img src="{{ warped_png }}" alt="Warped Pre" />
+                    </div>
+
+                    <div>
+                        <h3>Shift Magnitude (MIP)</h3>
+                        <img src="{{ mip_png }}" alt="Shift MIP" />
+                    </div>
+                </div>
+
+                <a class="btn" href="{{ flow_npy }}">Download flow.npy</a>
+                <a class="btn" href="/">Run another</a>
+            </div>
+        </div>
+    </body>
+</html>

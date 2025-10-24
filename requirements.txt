@@ -4,11 +4,8 @@ torchvision
 monai>=1.1.0
 
 # Data & Imaging
-numpy
-nibabel
 scipy
 pandas
-matplotlib
 opencv-python
 scikit-image
 
@@ -24,3 +21,13 @@ ipykernel
 # Optional / Nice to Have
 tqdm
 seaborn
+
+
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+jinja2==3.1.4
+numpy==2.1.2
+nibabel==5.2.1
+scipy==1.13.1
+matplotlib==3.9.0
+pillow==10.4.0
