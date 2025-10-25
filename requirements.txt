@@ -1,26 +1,31 @@
-# Core
-torch>=1.12
+# --- Core Deep Learning ---
+torch>=2.4.0
 torchvision
 monai>=1.1.0
 
-# Data & Imaging
-numpy
-nibabel
+# --- Data & Imaging ---
+numpy>=2.1.2
+nibabel>=5.3.2
 scipy
 pandas
 matplotlib
 opencv-python
 scikit-image
 
-# Visualization
+# --- Visualization ---
 vedo
 itk
 napari
 
-# Jupyter support
+# --- Web API (FastAPI stack) ---
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+
+# --- Jupyter Support ---
 jupyter
 ipykernel
 
-# Optional / Nice to Have
+# --- Optional / Utils ---
 tqdm
 seaborn
