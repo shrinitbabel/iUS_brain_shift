@@ -57,6 +57,7 @@ iUS_brain_shift/
 └── README.md                  # You are here
 ```
 
+The main model is `brain_shift_model_fulldataset.pt` (i.e., `models/brain_shift_model_fulldataset.pt`[models\brain_shift_model_fulldataset.pt])
 ---
 
 ## How to Run
