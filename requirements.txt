@@ -1,6 +1,8 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 # --- Core Deep Learning ---
-torch>=2.4.0
-torchvision
+torch==2.4.0
+torchvision==0.19.0
 monai>=1.1.0
 
 # --- Data & Imaging ---
@@ -21,6 +23,8 @@ napari
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 pydantic==2.9.2
+pydantic-settings==2.6.1
+
 
 # --- Jupyter Support ---
 jupyter
