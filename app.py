@@ -1,6 +1,6 @@
 # app.py
 # ─────────────────────────────────────────
-# Make BLAS/OMP single-threaded => fewer surprise restarts on tiny hosts
+# Keep BLAS/OMP single-threaded for stability on small hosts
 import os
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
@@ -32,51 +32,48 @@ except Exception:
     parse_tag_file_disk = None
 
 # ========== constants ==========
-MODEL_PATH      = "models/brain_shift_model_fulldataset.pt"  # FULL DATASET MODEL (only one)
+MODEL_PATH      = "models/brain_shift_model_fulldataset.pt"  # FULL DATASET MODEL only
 TARGET_DEFAULT  = 128
 COARSE_DEFAULT  = 192
-CAM_DEFAULT     = 64  # downscaled GCAM working cube
+CAM_FIXED       = 48   # Grad-CAM working cube (fixed as requested)
 
 # ========== UI ==========
-st.set_page_config(page_title="Brain Shift (iUS) – Demo", layout="wide")
+st.set_page_config(page_title="Brain Shift (iUS) – Streamlit Demo", layout="wide")
 st.markdown(
     "<h1 style='display:flex;align-items:center;gap:.5rem'>"
     "🧠 Brain Shift Prediction (iUS) – Streamlit Demo</h1>",
     unsafe_allow_html=True,
 )
 
-# Session state: results + viewer controls
+# Session state
 ss = st.session_state
 if "result" not in ss: ss.result = None
 if "gradcam" not in ss: ss.gradcam = None
 if "playing" not in ss: ss.playing = False
 if "last_idx" not in ss: ss.last_idx = 0
 if "axis" not in ss: ss.axis = "axial"
+if "gcam_ok" not in ss: ss.gcam_ok = False  # did Grad-CAM succeed last run?
 
-# ── Sidebar: simple controls for end users
+# ── Sidebar
 with st.sidebar:
     st.header("Settings")
     st.caption(f"Model: {MODEL_PATH}")
 
-    # Hide advanced processing knobs in an expander with human text
+    # Hide power knobs; keep them simple
     with st.expander("Advanced (power users)", expanded=False):
         st.write(
-            "- **Target cube size**: internal resize of volumes before inference. "
+            "- **Target cube size**: internal resize before inference. "
             "Bigger → sharper but heavier.\n"
-            "- **Grad-CAM working size**: smaller → more likely to work on small servers.\n"
-            "- **Coarse subsample**: caps the largest dimension *before* heavy ops to cut memory."
+            "- **Coarse subsample**: caps the largest dimension *before* heavy ops to cut memory.\n"
+            "- **Grad-CAM size**: fixed to 48 for reliability."
         )
         target_dim = st.select_slider("Target cube size", [96,112,128,160], value=TARGET_DEFAULT)
-        cam_dim    = st.select_slider("Grad-CAM working size", [48,64,80,96], value=CAM_DEFAULT)
         coarse_max_dim = st.select_slider("Coarse subsample (caps largest dim)", [128,160,192,224,256], value=COARSE_DEFAULT)
+        st.caption("Grad-CAM working size: 48 (fixed)")
 
-    use_cuda = st.toggle("Use CUDA if available", value=False) and torch.cuda.is_available()
+    use_cuda   = st.toggle("Use CUDA if available", value=False) and torch.cuda.is_available()
     device_str = "cuda" if use_cuda else "cpu"
-
-    want_tag = st.toggle("Compute GT stats from .tag (optional)", value=False)
-    want_gradcam = st.toggle("Enable Grad-CAM overlay", value=False) if HAS_EXPLAIN else False
-    if not HAS_EXPLAIN:
-        st.caption("Grad-CAM disabled (missing modules/explainability.py).")
+    want_tag   = st.toggle("Compute GT stats from .tag (optional)", value=False)
 
 # ========== caching ==========
 @st.cache_resource(show_spinner=False)
@@ -100,7 +97,7 @@ def load_model_for_gradcam(weights: str, device: str = "cpu"):
 
 @st.cache_data(show_spinner=False)
 def read_minc_stream_to_array(uploaded_file, max_dim: int):
-    """Stream an UploadedFile to temp .mnc, load via nibabel (mmap), and coarse-subsample."""
+    """Stream UploadedFile to temp .mnc, load (mmap), coarse-subsample."""
     with tempfile.NamedTemporaryFile(suffix=".mnc", delete=False) as tmp:
         uploaded_file.seek(0)
         shutil.copyfileobj(uploaded_file, tmp)
@@ -132,24 +129,22 @@ def resize_cube(v: np.ndarray, dim: int) -> np.ndarray:
 
 @torch.no_grad()
 def run_inference(pre_arr: np.ndarray, post_arr: np.ndarray, device: torch.device, model: torch.nn.Module, dim: int):
-    """Plain inference with UNet3D (no hooks)."""
     pre  = resize_cube(normalize01(pre_arr), dim)
     post = resize_cube(normalize01(post_arr), dim)
     pre_t  = torch.from_numpy(pre)[None, None, ...].to(device)
     post_t = torch.from_numpy(post)[None, None, ...].to(device)
     flow_t = model(pre_t, post_t)                    # (1,3,D,H,W)
     flow   = flow_t.detach().cpu().numpy()[0]        # (3,D,H,W)
-    mag    = np.linalg.norm(flow, axis=0)            # (D,H,W)  <-- flow magnitude
+    mag    = np.linalg.norm(flow, axis=0)            # (D,H,W)
     mean_mm, max_mm = float(mag.mean()), float(mag.max())
     return mean_mm, max_mm, mag, flow, pre, post
 
 def slice2d(vol: np.ndarray, axis: str, idx: int) -> np.ndarray:
     if axis == "axial":   return vol[idx, :, :]
     if axis == "coronal": return vol[:, idx, :]
-    return vol[:, :, idx]  # sagittal
+    return vol[:, :, idx]
 
 def draw_triptych_big(pre2d, post2d, heat2d, axis, idx, alpha=0.5):
-    """Large triptych under controls."""
     def big_subplot(img, title, overlay=None, alpha=0.5):
         fig, ax = plt.subplots(figsize=(8.5, 8.5))
         ax.imshow(img, cmap="gray", origin="lower")
@@ -166,6 +161,8 @@ def draw_triptych_big(pre2d, post2d, heat2d, axis, idx, alpha=0.5):
 
 def compute_gradcam(pre: np.ndarray, post: np.ndarray, device: torch.device, cam_dim: int, view_dim: int):
     """Low-RAM Grad-CAM: downscale to cam_dim^3, compute with grads, then upsample."""
+    if not HAS_EXPLAIN:
+        return None
     import torch.nn.functional as F
     try:
         modelGC = load_model_for_gradcam(MODEL_PATH, str(device))
@@ -181,7 +178,7 @@ def compute_gradcam(pre: np.ndarray, post: np.ndarray, device: torch.device, cam
 
             modelGC.zero_grad(set_to_none=True)
             out    = modelGC(pre_t, post_t)                 # (1,3,d,h,w)
-            target = out.norm(p=2, dim=1).mean()            # scalar
+            target = out.norm(p=2, dim=1).mean()
             target.backward()
 
             grads   = modelGC.get_activations_gradient()    # (1,C,d,h,w)
@@ -192,22 +189,20 @@ def compute_gradcam(pre: np.ndarray, post: np.ndarray, device: torch.device, cam
             cam_np  = cam.detach().cpu().numpy().astype(np.float32)
             cam_np  = (cam_np - cam_np.min()) / (cam_np.max() - cam_np.min() + 1e-8)
 
-        # Upsample to viewer size
         if cam_np.shape != (view_dim, view_dim, view_dim):
             f = [view_dim / cam_np.shape[i] for i in range(3)]
             cam_np = scipy.ndimage.zoom(cam_np, f, order=1, mode="nearest", prefilter=False)
 
-        # Cleanup
         del pre_t, post_t, out, cam, grads, acts, weights
         if device.type == "cuda": torch.cuda.empty_cache()
         gc.collect()
         return cam_np
 
     except MemoryError:
-        st.warning("Grad-CAM OOM. Lower the ‘Grad-CAM working size’.")
+        st.warning("Grad-CAM ran out of memory. Falling back to flow magnitude.")
         return None
     except Exception as e:
-        st.warning(f"Grad-CAM failed: {e}")
+        st.warning(f"Grad-CAM failed: {e}. Falling back to flow magnitude.")
         return None
 
 # ========== uploads ==========
@@ -234,6 +229,10 @@ if run:
             mean_mm, max_mm, mag, flow, pre128, post128 = run_inference(pre_arr, post_arr, device, model_inf, dim)
             s.update(label="Inference complete.")
 
+        # Always try Grad-CAM (fixed size = 48)
+        gcam = compute_gradcam(pre128, post128, device, cam_dim=CAM_FIXED, view_dim=dim)
+        gcam_ok = gcam is not None
+
         # Optional GT stats
         gt_mean = gt_max = None
         if tag_file and parse_tag_file_disk is not None:
@@ -248,23 +247,27 @@ if run:
                 try: os.remove(tag_path)
                 except Exception: pass
 
-        # Store for live viewer
+        # Store results
         ss.result = {
             "mean_mm": mean_mm, "max_mm": max_mm,
-            "mag": mag,        # (D,H,W) flow magnitude
-            "flow": flow,      # (3,D,H,W)
+            "mag": mag,            # (D,H,W) flow magnitude
+            "flow": flow,          # (3,D,H,W)
             "pre": pre128, "post": post128,
             "gt_mean": gt_mean, "gt_max": gt_max,
             "dim": dim
         }
-        ss.gradcam = None
-        ss.playing = True          # autoplay after run
-        ss.last_idx = 0            # start from first slice
+        ss.gradcam = gcam
+        ss.gcam_ok = gcam_ok
+        ss.playing = True
+        ss.last_idx = 0
         ss.axis = "axial"
+        if not gcam_ok:
+            st.info("Showing flow magnitude (Grad-CAM unavailable).")
         st.success("✅ Done!")
     except Exception as e:
         ss.result = None
         ss.gradcam = None
+        ss.gcam_ok = False
         ss.playing = False
         st.error(f"Error: {e}")
         st.exception(e)
@@ -274,7 +277,7 @@ if run:
 # ========== viewer (no recompute) ==========
 res = ss.result
 if res is not None:
-    # Top metrics row
+    # Top metrics
     m1, m2, m3 = st.columns(3)
     m1.metric("Mean brain shift (pred)", f"{res['mean_mm']:.3f} mm")
     m2.metric("Max brain shift (pred)",  f"{res['max_mm']:.3f} mm")
@@ -285,59 +288,44 @@ if res is not None:
 
     st.subheader("Viewer")
 
-    # Controls column (left)
+    # Controls
     vcol1, _ = st.columns([1,3])
     with vcol1:
-        # View axis
-        axis = st.radio("View", options=["axial", "coronal", "sagittal"], index=["axial","coronal","sagittal"].index(ss.axis), key="axis_radio")
+        axis = st.radio("View", options=["axial", "coronal", "sagittal"], index=["axial","coronal","sagittal"].index(ss.axis))
         ss.axis = axis
-
-        # Max index for chosen axis
         idx_max = {"axial": res["mag"].shape[0]-1, "coronal": res["mag"].shape[1]-1, "sagittal": res["mag"].shape[2]-1}[axis]
-        # Slider; moving it pauses playback automatically
-        idx = st.slider("Slice index", 0, idx_max, ss.last_idx if ss.last_idx <= idx_max else idx_max, key="idx_slider")
+        idx = st.slider("Slice index", 0, idx_max, ss.last_idx if ss.last_idx <= idx_max else idx_max)
         if idx != ss.last_idx:
             ss.playing = False
         ss.last_idx = idx
 
-        # Heatmap choice
-        heat_choice = "Flow magnitude"
-        if HAS_EXPLAIN and want_gradcam:
-            heat_choice = st.radio("Heatmap", options=["Flow magnitude","Grad-CAM"], index=0 if ss.gradcam is None else 1)
-
-        alpha  = st.slider("Overlay alpha", 0.0, 1.0, 0.5, 0.05)
+        alpha = st.slider("Overlay alpha", 0.0, 1.0, 0.5, 0.05)
 
         # Play/Pause (Play restarts from slice 0)
         pcol1, pcol2 = st.columns(2)
         with pcol1:
             if st.button("▶️ Play" if not ss.playing else "⏸ Pause"):
                 if not ss.playing:
-                    ss.last_idx = 0     # restart at beginning
+                    ss.last_idx = 0
                 ss.playing = not ss.playing
         with pcol2:
             fps = st.slider("FPS", 1, 20, 6)
 
-        # Compute Grad-CAM on demand (once)
-        if heat_choice == "Grad-CAM" and HAS_EXPLAIN and want_gradcam and ss.gradcam is None:
-            with st.spinner("Computing Grad-CAM…"):
-                device = torch.device(device_str)
-                ss.gradcam = compute_gradcam(res["pre"], res["post"], device, cam_dim=cam_dim, view_dim=res["dim"])
-
-    # --- Big viewer section (full width, under the controls)
+    # Big viewer under controls — always prefer Grad-CAM if available
     st.markdown("---")
-    heat = res["mag"] if (heat_choice != "Grad-CAM" or ss.gradcam is None) else ss.gradcam
+    heat_vol = ss.gradcam if (ss.gcam_ok and ss.gradcam is not None) else res["mag"]
     pre2d  = slice2d(res["pre"],  ss.axis, ss.last_idx)
     post2d = slice2d(res["post"], ss.axis, ss.last_idx)
-    heat2d = slice2d(heat,       ss.axis, ss.last_idx)
+    heat2d = slice2d(heat_vol,    ss.axis, ss.last_idx)
     draw_triptych_big(pre2d, post2d, heat2d, ss.axis, ss.last_idx, alpha=alpha)
 
-    # Auto-play loop: bump index, rerun
+    # Autoplay
     if ss.playing:
         time.sleep(1.0 / fps)
         ss.last_idx = (ss.last_idx + 1) % (idx_max + 1)
         st.rerun()
 
-    # Export flow (optional toggle stays in sidebar)
+    # Export flow (optional)
     if st.sidebar.toggle("Export flow .npy", value=False, key="export_flow_toggle"):
         with tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as tmp:
             np.save(tmp.name, res["flow"]); path = tmp.name
