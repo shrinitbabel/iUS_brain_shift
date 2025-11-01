@@ -98,26 +98,53 @@ def load_model_for_gradcam(weights: str, device: str = "cpu"):
 
 @st.cache_data(show_spinner=False)
 def read_minc_stream_to_array(uploaded_file, max_dim: int):
-    """Stream UploadedFile to a temp file (preserving extension), load via nibabel (mmap), coarse-subsample."""
-    # Preserve original suffixes so nibabel recognizes .mnc.gz / .nii.gz etc.
+    """
+    Stream UploadedFile to a temp file (preserving extension), load via nibabel (mmap),
+    and coarse-subsample. If file is .mnc.gz, transparently gunzip to .mnc and load.
+    """
+    import gzip
+    from pathlib import Path
+    import nibabel as nib
+    import numpy as np
+    import tempfile, shutil, os
+
+    # Preserve original suffixes so nibabel can sniff NIfTI; MINC gz needs manual gunzip
     name = uploaded_file.name or "volume.mnc"
     suffix = "".join(Path(name).suffixes) or ".mnc"  # e.g., ".mnc.gz", ".nii.gz", ".mnc"
-    # Fallback: if suffix is only ".gz" but missing inner, keep .gz; nibabel can still sniff many formats.
+
+    # Write the uploaded bytes to disk
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         uploaded_file.seek(0)
         shutil.copyfileobj(uploaded_file, tmp)
         tmp.flush()
         path = tmp.name
+
     try:
-        img = nib.load(path, mmap=True)
+        load_path = path
+        # If this is a gzipped MINC, gunzip to a real .mnc first
+        if suffix.endswith(".mnc.gz"):
+            with tempfile.NamedTemporaryFile(suffix=".mnc", delete=False) as unz:
+                with gzip.open(path, "rb") as src:
+                    shutil.copyfileobj(src, unz)
+                unz.flush()
+                load_path = unz.name
+
+        img = nib.load(load_path, mmap=True)
         shape = img.shape
+
+        # coarse subsample so largest dim <= max_dim
         factor = max(1, int(np.ceil(max(shape) / max_dim)))
         slicer = tuple(slice(None, None, factor) for _ in shape)
         arr = np.asarray(img.dataobj[slicer], dtype=np.float32, order="C")
         return arr, img.affine, shape, factor
+
     finally:
+        # Clean up temp files
         try: os.remove(path)
         except Exception: pass
+        if 'load_path' in locals() and load_path != path:
+            try: os.remove(load_path)
+            except Exception: pass
 
 # ========== utils ==========
 def normalize01(v: np.ndarray) -> np.ndarray:
