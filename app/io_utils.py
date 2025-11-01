@@ -2,7 +2,8 @@ import io
 import numpy as np
 import nibabel as nib
 from typing import Tuple, Optional
-import os, tempfile
+import os, tempfile, shutil
+from fastapi import UploadFile
 
 # MINC (.mnc) reader using nibabel
 # Returns float32 array and affine for spacing/origin if needed
@@ -24,6 +25,33 @@ def load_mnc_bytes(file_bytes: bytes,
         factor = max(1, int(np.ceil(max(shape) / max_dim)))
         slicer = tuple(slice(None, None, factor) for _ in shape)
         # This slices the memmapped data (low-memory)
+        arr = np.asarray(img.dataobj[slicer], dtype=np.float32, order="C")
+        return arr, img.affine
+    finally:
+        try: os.remove(path)
+        except Exception: pass
+
+def load_mnc_uploadfile(f: UploadFile, max_dim: int = 160) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Stream an UploadFile to a temp .mnc on disk (no full .read() into RAM),
+    then load with nibabel using mmap and coarse subsampling so the largest
+    dimension <= max_dim before any dense ops.
+    """
+    # Write the streamed file to disk
+    with tempfile.NamedTemporaryFile(suffix=".mnc", delete=False) as tmp:
+        # copy file-like to disk without buffering everything in memory
+        f.file.seek(0)
+        shutil.copyfileobj(f.file, tmp)
+        tmp.flush()
+        path = tmp.name
+
+    try:
+        # mmap avoids materializing entire volume
+        img = nib.load(path, mmap=True)
+        shape = img.shape  # e.g. (Z, Y, X)
+        # integer stride so biggest dim <= max_dim
+        factor = max(1, int(np.ceil(max(shape) / max_dim)))
+        slicer = tuple(slice(None, None, factor) for _ in shape)
         arr = np.asarray(img.dataobj[slicer], dtype=np.float32, order="C")
         return arr, img.affine
     finally:

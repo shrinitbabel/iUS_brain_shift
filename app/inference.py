@@ -11,12 +11,11 @@ def _normalize_01(vol: np.ndarray) -> np.ndarray:
     return ((vol - vmin) / (vmax - vmin)).astype(np.float32, copy=False)
 
 def _resize(vol: np.ndarray, target_shape=TARGET_SHAPE) -> np.ndarray:
-    # keep float32; make sure it's contiguous to avoid extra copies
     v = np.ascontiguousarray(vol, dtype=np.float32)
     factors = [target_shape[i] / v.shape[i] for i in range(3)]
-    # order=1 is linear; prefilter=False reduces memory, valid for order<=1
     out = scipy.ndimage.zoom(v, factors, order=1, mode="nearest", prefilter=False)
     return out.astype(np.float32, copy=False)
+
 
 def preprocess_pair(pre_vol: np.ndarray, post_vol: np.ndarray) -> Tuple[torch.Tensor, torch.Tensor]:
     pre  = _resize(_normalize_01(pre_vol))

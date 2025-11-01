@@ -120,7 +120,9 @@ async def diagnose(
     report["total_s"] = round(time.time() - t0, 3)
     return report
 
-@app.post("/predict", response_model=ShiftSummary) 
+from app.io_utils import load_mnc_uploadfile
+
+@app.post("/predict", response_model=ShiftSummary)
 async def predict(
     pre: UploadFile = File(..., description="Pre-resection .mnc"),
     post: UploadFile = File(..., description="Post-resection .mnc"),
@@ -131,28 +133,26 @@ async def predict(
 
     try:
         _check_size(pre); _check_size(post)
-        pre_bytes = await pre.read()
-        post_bytes = await post.read()
 
-        # MINC load (now supports MINC2 via h5py)
+        # 🔻 No await pre.read()/post.read() here
         try:
-            pre_vol, _ = load_mnc_bytes(pre_bytes)
-            post_vol, _ = load_mnc_bytes(post_bytes)
-
-            # 🔎 INSERT #1: log raw array dtype/shape before preprocessing
-            print(
-                "[PREDICT] loaded",
-                {"pre": {"dtype": str(pre_vol.dtype), "shape": pre_vol.shape},
-                 "post": {"dtype": str(post_vol.dtype), "shape": post_vol.shape}},
-                flush=True
-            )
-
+            pre_vol, _  = load_mnc_uploadfile(pre,  max_dim=160)   # tune 160→128 if still tight
+            post_vol, _ = load_mnc_uploadfile(post, max_dim=160)
+            print("[PREDICT] loaded",
+                  {"pre": {"dtype": str(pre_vol.dtype), "shape": pre_vol.shape},
+                   "post": {"dtype": str(post_vol.dtype), "shape": post_vol.shape}},
+                  flush=True)
         except Exception as e:
             tb = traceback.format_exc()
             print(f"[MINC-LOAD] {e}\n{tb}")
             raise HTTPException(status_code=400, detail=f"Failed to read .mnc: {e}")
 
-        # Inference (includes normalize+resize to 128^3)
+        # Optional guardrail for extreme sizes (after subsample)
+        import numpy as np
+        vox = int(np.prod(pre_vol.shape) + np.prod(post_vol.shape))
+        if vox > 2 * (256*256*256):
+            raise HTTPException(status_code=413, detail=f"Volume too large after subsample ({pre_vol.shape}, {post_vol.shape}).")
+
         try:
             mean_pred, max_pred, flow = run_model(pre_vol, post_vol, device, model)
         except MemoryError as me:
@@ -177,7 +177,7 @@ async def predict(
             max_shift_tag_mm=None,
             saved_artifact=saved_artifact,
         )
-
+    
     except HTTPException:
         raise
     except Exception as e:
