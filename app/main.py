@@ -4,8 +4,8 @@ from app.schemas import ShiftSummary
 from app.io_utils import load_mnc_bytes
 from app.inference import run_model
 from app.settings import settings
-
 import torch, os, tempfile, numpy as np
+import traceback
 
 app = FastAPI(title="Brain Shift API", version="0.1.0")
 app.add_middleware(
@@ -37,6 +37,7 @@ def _check_size(f: UploadFile):
     if getattr(f, "size", None) and f.size > MAX_BYTES:
         raise HTTPException(status_code=413, detail=f"File too large (> {settings.MAX_UPLOAD_MB} MB): {f.filename}")
 
+
 @app.post("/predict", response_model=ShiftSummary)
 async def predict(
     pre: UploadFile = File(..., description="Pre-resection .mnc"),
@@ -46,31 +47,53 @@ async def predict(
     if not MODEL_READY:
         raise HTTPException(status_code=503, detail="Model not loaded on server.")
 
-    _check_size(pre); _check_size(post)
-    pre_bytes = await pre.read()
-    post_bytes = await post.read()
-
     try:
-        pre_vol, _ = load_mnc_bytes(pre_bytes)
-        post_vol, _ = load_mnc_bytes(post_bytes)
+        _check_size(pre); _check_size(post)
+        pre_bytes = await pre.read()
+        post_bytes = await post.read()
+
+        # MINC load (now supports MINC2 via h5py)
+        try:
+            pre_vol, _ = load_mnc_bytes(pre_bytes)
+            post_vol, _ = load_mnc_bytes(post_bytes)
+        except Exception as e:
+            tb = traceback.format_exc()
+            print(f"[MINC-LOAD] {e}\n{tb}")
+            raise HTTPException(status_code=400, detail=f"Failed to read .mnc: {e}")
+
+        # Inference (includes normalize+resize to 128^3)
+        try:
+            mean_pred, max_pred, flow = run_model(pre_vol, post_vol, device, model)
+        except MemoryError as me:
+            tb = traceback.format_exc()
+            print(f"[INFER-OMEM] {me}\n{tb}")
+            raise HTTPException(status_code=413, detail="Out of memory during inference.")
+        except Exception as e:
+            tb = traceback.format_exc()
+            print(f"[INFER-ERR] {e}\n{tb}")
+            raise HTTPException(status_code=500, detail=f"Inference error: {e}")
+
+        saved_artifact = None
+        if save_field:
+            with tempfile.NamedTemporaryFile(prefix="flow_", suffix=".npy", delete=False, dir="/tmp") as tmp:
+                np.save(tmp.name, flow)
+                saved_artifact = tmp.name
+
+        return ShiftSummary(
+            mean_shift_pred_mm=round(float(mean_pred), 3),
+            max_shift_pred_mm=round(float(max_pred), 3),
+            mean_shift_tag_mm=None,
+            max_shift_tag_mm=None,
+            saved_artifact=saved_artifact,
+        )
+
+    except HTTPException:
+        # already handled with detail + status
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read .mnc: {e}")
-
-    mean_pred, max_pred, flow = run_model(pre_vol, post_vol, device, model)
-
-    saved_artifact = None
-    if save_field:
-        with tempfile.NamedTemporaryFile(prefix="flow_", suffix=".npy", delete=False, dir="/tmp") as tmp:
-            np.save(tmp.name, flow)
-            saved_artifact = tmp.name
-
-    return ShiftSummary(
-        mean_shift_pred_mm=round(float(mean_pred), 3),
-        max_shift_pred_mm=round(float(max_pred), 3),
-        mean_shift_tag_mm=None,
-        max_shift_tag_mm=None,
-        saved_artifact=saved_artifact,
-    )
+        tb = traceback.format_exc()
+        print(f"[UNHANDLED] {e}\n{tb}")
+        raise HTTPException(status_code=500, detail=f"Unhandled error: {e}")
 
 @app.get("/health")
 async def health():
