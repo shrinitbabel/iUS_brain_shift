@@ -2,17 +2,30 @@ import io
 import numpy as np
 import nibabel as nib
 from typing import Tuple, Optional
-
+import os, tempfile
 
 # MINC (.mnc) reader using nibabel
 # Returns float32 array and affine for spacing/origin if needed
 
 
+# app/io_utils.py
+
 def load_mnc_bytes(file_bytes: bytes) -> Tuple[np.ndarray, np.ndarray]:
-    bio = io.BytesIO(file_bytes)
-    img = nib.load(bio)
-    arr = np.asarray(img.get_fdata(), dtype=np.float32)
-    return arr, img.affine
+    """Write bytes to a temp .mnc and load with nibabel; return array + affine."""
+    with tempfile.NamedTemporaryFile(suffix=".mnc", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp.flush()
+        path = tmp.name
+    try:
+        img = nib.load(path)      # supports MINC1/2
+        arr = np.asarray(img.get_fdata(), dtype=np.float32)
+        return arr, img.affine
+    finally:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
 
 
 # Optional: parse a .tag file with two landmark lists
