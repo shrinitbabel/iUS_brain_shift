@@ -1,0 +1,5 @@
+# .streamlit/config.toml
+[server]
+maxUploadSize = 2000   # MB; adjust to your needs
+enableXsrfProtection = true
+fileWatcherType = "auto"

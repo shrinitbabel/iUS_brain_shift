@@ -1,0 +1,12 @@
+# Prefer CPU PyTorch wheels
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+streamlit>=1.37
+numpy>=2.1
+scipy>=1.10
+nibabel>=5.3.2
+h5py>=3.10
+matplotlib>=3.8
+scikit-image>=0.23
+torch==2.4.0
+torchvision==0.19.0

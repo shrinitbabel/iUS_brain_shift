@@ -16,7 +16,6 @@ def _resize(vol: np.ndarray, target_shape=TARGET_SHAPE) -> np.ndarray:
     out = scipy.ndimage.zoom(v, factors, order=1, mode="nearest", prefilter=False)
     return out.astype(np.float32, copy=False)
 
-
 def preprocess_pair(pre_vol: np.ndarray, post_vol: np.ndarray) -> Tuple[torch.Tensor, torch.Tensor]:
     pre  = _resize(_normalize_01(pre_vol))
     post = _resize(_normalize_01(post_vol))
