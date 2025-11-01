@@ -9,23 +9,26 @@ import os, tempfile
 
 
 # app/io_utils.py
-
-def load_mnc_bytes(file_bytes: bytes) -> Tuple[np.ndarray, np.ndarray]:
-    """Write bytes to a temp .mnc and load with nibabel; return array + affine."""
+def load_mnc_bytes(file_bytes: bytes,
+                   max_dim: int = 256) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Load .mnc with mmap and coarse subsample if needed so the largest
+    dimension <= max_dim before any dense ops.
+    """
     with tempfile.NamedTemporaryFile(suffix=".mnc", delete=False) as tmp:
-        tmp.write(file_bytes)
-        tmp.flush()
-        path = tmp.name
+        tmp.write(file_bytes); tmp.flush(); path = tmp.name
     try:
-        img = nib.load(path)      # supports MINC1/2
-        arr = np.asarray(img.get_fdata(), dtype=np.float32)
+        img = nib.load(path, mmap=True)  # MINC2 uses h5py underneath
+        shape = img.shape  # (Z, Y, X) typically
+        # integer stride so biggest dim is <= max_dim
+        factor = max(1, int(np.ceil(max(shape) / max_dim)))
+        slicer = tuple(slice(None, None, factor) for _ in shape)
+        # This slices the memmapped data (low-memory)
+        arr = np.asarray(img.dataobj[slicer], dtype=np.float32, order="C")
         return arr, img.affine
     finally:
-        try:
-            os.remove(path)
-        except Exception:
-            pass
-
+        try: os.remove(path)
+        except Exception: pass
 
 
 # Optional: parse a .tag file with two landmark lists

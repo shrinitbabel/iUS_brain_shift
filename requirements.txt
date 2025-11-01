@@ -14,11 +14,6 @@ matplotlib
 opencv-python
 scikit-image
 
-# --- Visualization ---
-vedo
-itk
-napari
-
 # --- Web API (FastAPI stack) ---
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
@@ -28,7 +23,6 @@ python-multipart>=0.0.9,<0.1.0
 h5py>=3.10
 
 # --- Jupyter Support ---
-jupyter
 ipykernel
 
 # --- Optional / Utils ---
