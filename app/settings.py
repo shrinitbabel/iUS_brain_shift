@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field
+from typing import List
 
 class Settings(BaseSettings):
     MODEL_PATH: str = Field(default="models/brain_shift_model_02.pt")
