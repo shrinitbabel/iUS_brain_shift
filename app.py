@@ -64,7 +64,7 @@ with st.sidebar:
             "- **Target cube size**: internal resize of volumes before inference. "
             "Bigger → sharper but heavier.\n"
             "- **Grad-CAM working size**: smaller → more likely to work on small servers.\n"
-            "- **Coarse subsample**: caps the largest dimension *before* any heavy ops to cut memory."
+            "- **Coarse subsample**: caps the largest dimension *before* heavy ops to cut memory."
         )
         target_dim = st.select_slider("Target cube size", [96,112,128,160], value=TARGET_DEFAULT)
         cam_dim    = st.select_slider("Grad-CAM working size", [48,64,80,96], value=CAM_DEFAULT)
@@ -148,21 +148,17 @@ def slice2d(vol: np.ndarray, axis: str, idx: int) -> np.ndarray:
     if axis == "coronal": return vol[:, idx, :]
     return vol[:, :, idx]  # sagittal
 
-def big_subplot(img, title, cmap=None, overlay=None, alpha=0.5):
-    """Bigger, clearer matplotlib figure."""
-    fig, ax = plt.subplots(figsize=(6.8, 6.8))  # BIG
-    ax.imshow(img, cmap=cmap or "gray", origin="lower")
-    if overlay is not None:
-        im = ax.imshow(overlay, origin="lower", alpha=alpha)
-        cbar = fig.colorbar(im, ax=ax, shrink=0.75, label="heat")
-    ax.set_title(title); ax.axis("off")
-    st.pyplot(fig)
-    plt.close(fig)
+def draw_triptych_big(pre2d, post2d, heat2d, axis, idx, alpha=0.5):
+    """Large triptych under controls."""
+    def big_subplot(img, title, overlay=None, alpha=0.5):
+        fig, ax = plt.subplots(figsize=(8.5, 8.5))
+        ax.imshow(img, cmap="gray", origin="lower")
+        if overlay is not None:
+            im = ax.imshow(overlay, origin="lower", alpha=alpha)
+            fig.colorbar(im, ax=ax, shrink=0.72, label="heat")
+        ax.set_title(title); ax.axis("off")
+        st.pyplot(fig); plt.close(fig)
 
-def draw_triptych(pre: np.ndarray, post: np.ndarray, heat: np.ndarray, axis: str, idx: int, alpha: float = 0.5):
-    pre2d  = slice2d(pre,  axis, idx)
-    post2d = slice2d(post, axis, idx)
-    heat2d = slice2d(heat, axis, idx)
     cols = st.columns([1,1,1])
     with cols[0]: big_subplot(pre2d,  f"PRE • {axis} {idx}")
     with cols[1]: big_subplot(post2d, f"POST • {axis} {idx}")
@@ -229,12 +225,12 @@ if run:
         model_inf = load_model_for_inference(MODEL_PATH, device_str)
 
         with st.status("Loading volumes…", expanded=False) as s:
-            pre_arr,  pre_aff,  pre_shape,  pre_stride  = read_minc_stream_to_array(pre_file,  max_dim=COARSE_DEFAULT if "coarse_max_dim" not in locals() else coarse_max_dim)
-            post_arr, post_aff, post_shape, post_stride = read_minc_stream_to_array(post_file, max_dim=COARSE_DEFAULT if "coarse_max_dim" not in locals() else coarse_max_dim)
+            pre_arr,  pre_aff,  pre_shape,  pre_stride  = read_minc_stream_to_array(pre_file,  max_dim=coarse_max_dim)
+            post_arr, post_aff, post_shape, post_stride = read_minc_stream_to_array(post_file, max_dim=coarse_max_dim)
             s.update(label=f"Loaded. PRE {pre_shape}→/×{pre_stride}, POST {post_shape}→/×{post_stride}")
 
         with st.status("Running inference…", expanded=False) as s:
-            dim = TARGET_DEFAULT if "target_dim" not in locals() else target_dim
+            dim = target_dim
             mean_mm, max_mm, mag, flow, pre128, post128 = run_inference(pre_arr, post_arr, device, model_inf, dim)
             s.update(label="Inference complete.")
 
@@ -262,8 +258,8 @@ if run:
             "dim": dim
         }
         ss.gradcam = None
-        ss.playing = False
-        ss.last_idx = 0
+        ss.playing = True          # autoplay after run
+        ss.last_idx = 0            # start from first slice
         ss.axis = "axial"
         st.success("✅ Done!")
     except Exception as e:
@@ -289,8 +285,8 @@ if res is not None:
 
     st.subheader("Viewer")
 
-    # Controls column + autoplay
-    vcol1, vcol2 = st.columns([1,3])
+    # Controls column (left)
+    vcol1, _ = st.columns([1,3])
     with vcol1:
         # View axis
         axis = st.radio("View", options=["axial", "coronal", "sagittal"], index=["axial","coronal","sagittal"].index(ss.axis), key="axis_radio")
@@ -311,32 +307,37 @@ if res is not None:
 
         alpha  = st.slider("Overlay alpha", 0.0, 1.0, 0.5, 0.05)
 
-        # Autoplay controls
-        play_cols = st.columns(2)
-        with play_cols[0]:
+        # Play/Pause (Play restarts from slice 0)
+        pcol1, pcol2 = st.columns(2)
+        with pcol1:
             if st.button("▶️ Play" if not ss.playing else "⏸ Pause"):
+                if not ss.playing:
+                    ss.last_idx = 0     # restart at beginning
                 ss.playing = not ss.playing
-        with play_cols[1]:
+        with pcol2:
             fps = st.slider("FPS", 1, 20, 6)
 
         # Compute Grad-CAM on demand (once)
         if heat_choice == "Grad-CAM" and HAS_EXPLAIN and want_gradcam and ss.gradcam is None:
             with st.spinner("Computing Grad-CAM…"):
                 device = torch.device(device_str)
-                ss.gradcam = compute_gradcam(res["pre"], res["post"], device, cam_dim=CAM_DEFAULT if "cam_dim" not in locals() else cam_dim, view_dim=res["dim"])
+                ss.gradcam = compute_gradcam(res["pre"], res["post"], device, cam_dim=cam_dim, view_dim=res["dim"])
 
-    # Right: big triptych
-    with vcol2:
-        heat = res["mag"] if (heat_choice != "Grad-CAM" or ss.gradcam is None) else ss.gradcam
-        draw_triptych(res["pre"], res["post"], heat, ss.axis, ss.last_idx, alpha=alpha)
+    # --- Big viewer section (full width, under the controls)
+    st.markdown("---")
+    heat = res["mag"] if (heat_choice != "Grad-CAM" or ss.gradcam is None) else ss.gradcam
+    pre2d  = slice2d(res["pre"],  ss.axis, ss.last_idx)
+    post2d = slice2d(res["post"], ss.axis, ss.last_idx)
+    heat2d = slice2d(heat,       ss.axis, ss.last_idx)
+    draw_triptych_big(pre2d, post2d, heat2d, ss.axis, ss.last_idx, alpha=alpha)
 
     # Auto-play loop: bump index, rerun
     if ss.playing:
         time.sleep(1.0 / fps)
         ss.last_idx = (ss.last_idx + 1) % (idx_max + 1)
-        st.experimental_rerun()
+        st.rerun()
 
-    # Export flow if needed
+    # Export flow (optional toggle stays in sidebar)
     if st.sidebar.toggle("Export flow .npy", value=False, key="export_flow_toggle"):
         with tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as tmp:
             np.save(tmp.name, res["flow"]); path = tmp.name
