@@ -1,19 +1,13 @@
 services:
   - type: web
-    name: brain-shift-api
-    runtime: python
+    name: brainshift-streamlit
+    env: python
     plan: starter
     autoDeploy: true
-    envVars:
-      - key: MODEL_PATH
-        value: models/brain_shift_model_02.pt
-      - key: DEVICE
-        value: cuda
-      - key: ALLOWED_ORIGINS
-        value: '["https://www.babels.ai","https://babels.ai","http://localhost:3000"]'
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    disk:
-      name: cache
-      mountPath: /var/cache
-      sizeGB: 1
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    envVars:
+      - key: STREAMLIT_SERVER_ENABLECORS
+        value: "false"
+      - key: STREAMLIT_BROWSER_GATHERUSAGESTATS
+        value: "false"
