@@ -1,7 +1,15 @@
 # app.py
 import os, sys, gc, tempfile, shutil
+
+# Cap BLAS/OMP threads to avoid CPU over-subscription on Streamlit Cloud
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
 import numpy as np
 import torch
+torch.set_num_threads(1)
 import streamlit as st
 import nibabel as nib
 import scipy.ndimage
@@ -34,7 +42,7 @@ with st.sidebar:
     st.header("Settings")
     st.caption(f"Model: {MODEL_PATH}")
     target_dim = st.select_slider("Target cube size", [96,112,128,160], value=TARGET_DEFAULT)
-    cam_dim = st.select_slider("Grad-CAM working size", [80, 96, 112, 128], value=96)
+    cam_dim = st.select_slider("Grad-CAM working size", [48, 64, 80, 96], value=64)
     coarse_max_dim = st.select_slider("Coarse subsample (caps largest dim)", [128,160,192,224,256], value=COARSE_DEFAULT)
     use_cuda   = st.toggle("Use CUDA if available", value=False) and torch.cuda.is_available()
     device_str = "cuda" if use_cuda else "cpu"
@@ -138,54 +146,56 @@ def draw_triptych(pre: np.ndarray, post: np.ndarray, heat: np.ndarray, axis: str
     cols[2].pyplot(fig3); plt.close(fig3)
 
 def compute_gradcam(pre: np.ndarray, post: np.ndarray, device: torch.device, cam_dim: int, view_dim: int):
-    """Grad-CAM with downscaled inputs to cut memory; upsample CAM for display."""
+    """Low-RAM Grad-CAM: downscale to cam_dim^3, compute with grads, then upsample."""
     import torch.nn.functional as F
     try:
         modelGC = load_model_for_gradcam(MODEL_PATH, str(device))
 
-        # downscale to cam_dim for Grad-CAM
-        def _resize(v, d): 
+        # Downscale volumes to cam_dim
+        def _resize(v, d):
             f = [d / v.shape[i] for i in range(3)]
             return scipy.ndimage.zoom(np.ascontiguousarray(v, np.float32), f, order=1, mode="nearest", prefilter=False)
 
         pre_small  = _resize(pre,  cam_dim)
         post_small = _resize(post, cam_dim)
 
+        # Do the minimal work with grads ON
         with torch.enable_grad():
             pre_t  = torch.from_numpy(pre_small)[None, None, ...].to(device).requires_grad_(True)
             post_t = torch.from_numpy(post_small)[None, None, ...].to(device).requires_grad_(True)
 
-            modelGC.zero_grad()
-            out = modelGC(pre_t, post_t)               # (1,3,d,h,w)
-            target = out.norm(p=2, dim=1).mean()       # scalar objective
+            modelGC.zero_grad(set_to_none=True)
+            out    = modelGC(pre_t, post_t)                 # (1,3,d,h,w)
+            target = out.norm(p=2, dim=1).mean()            # scalar
             target.backward()
 
-            grads = modelGC.get_activations_gradient() # (1,C,d,h,w)
-            acts  = modelGC.get_activations().detach() # (1,C,d,h,w)
+            grads   = modelGC.get_activations_gradient()    # (1,C,d,h,w)
+            acts    = modelGC.get_activations().detach()    # (1,C,d,h,w)
             weights = grads.mean(dim=(2,3,4), keepdim=True)
-            cam = (weights * acts).sum(dim=1).squeeze(0)  # (d,h,w)
-            cam = F.relu(cam)
-            cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
-            cam_np = cam.detach().cpu().numpy().astype(np.float32)
+            cam     = (weights * acts).sum(dim=1).squeeze(0)  # (d,h,w)
+            cam     = F.relu(cam)
+            cam     = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+            cam_np  = cam.detach().cpu().numpy().astype(np.float32)
 
-        # upsample CAM to viewer size (target_dim)
+        # Upsample CAM back to viewer size
         if cam_np.shape != (view_dim, view_dim, view_dim):
             f = [view_dim / cam_np.shape[i] for i in range(3)]
             cam_np = scipy.ndimage.zoom(cam_np, f, order=1, mode="nearest", prefilter=False)
 
-        # cleanup
-        del pre_t, post_t, out, cam, grads, acts
-        torch.cuda.empty_cache() if device.type == "cuda" else None
+        # Aggressive cleanup
+        del pre_t, post_t, out, cam, grads, acts, weights
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
         gc.collect()
         return cam_np
 
     except MemoryError:
-        # don’t crash the app; surface a graceful warning
-        st.warning("Grad-CAM ran out of memory at this size. Try a smaller ‘Grad-CAM working size’.")
+        st.warning("Grad-CAM OOM. Drop the ‘Grad-CAM working size’ to 48 or disable Grad-CAM.")
         return None
     except Exception as e:
         st.warning(f"Grad-CAM failed: {e}")
         return None
+
 
 # ========== uploads ==========
 c1, c2 = st.columns(2)
