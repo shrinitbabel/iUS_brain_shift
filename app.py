@@ -8,6 +8,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import sys, gc, tempfile, shutil, time
+from pathlib import Path
 import numpy as np
 import torch
 torch.set_num_threads(1)
@@ -35,7 +36,7 @@ except Exception:
 MODEL_PATH      = "models/brain_shift_model_fulldataset.pt"  # FULL DATASET MODEL only
 TARGET_DEFAULT  = 128
 COARSE_DEFAULT  = 192
-CAM_FIXED       = 48   # Grad-CAM working cube (fixed)
+CAM_FIXED       = 48   # Grad-CAM working cube (fixed as requested)
 
 # ========== UI ==========
 st.set_page_config(page_title="Brain Shift (iUS) – Streamlit Demo", layout="wide")
@@ -97,8 +98,12 @@ def load_model_for_gradcam(weights: str, device: str = "cpu"):
 
 @st.cache_data(show_spinner=False)
 def read_minc_stream_to_array(uploaded_file, max_dim: int):
-    """Stream UploadedFile to temp .mnc, load (mmap), coarse-subsample."""
-    with tempfile.NamedTemporaryFile(suffix=".mnc", delete=False) as tmp:
+    """Stream UploadedFile to a temp file (preserving extension), load via nibabel (mmap), coarse-subsample."""
+    # Preserve original suffixes so nibabel recognizes .mnc.gz / .nii.gz etc.
+    name = uploaded_file.name or "volume.mnc"
+    suffix = "".join(Path(name).suffixes) or ".mnc"  # e.g., ".mnc.gz", ".nii.gz", ".mnc"
+    # Fallback: if suffix is only ".gz" but missing inner, keep .gz; nibabel can still sniff many formats.
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         uploaded_file.seek(0)
         shutil.copyfileobj(uploaded_file, tmp)
         tmp.flush()
@@ -205,50 +210,12 @@ def compute_gradcam(pre: np.ndarray, post: np.ndarray, device: torch.device, cam
         st.warning(f"Grad-CAM failed: {e}. Falling back to flow magnitude.")
         return None
 
-# ---------- smart pair helper ----------
-def autopair_mnc(uploaded_files):
-    """
-    Try to auto-assign PRE/POST from filenames.
-    Accepts names like:
-      - Case3-US-before.mnc -> PRE
-      - Case3-US-after.mnc  -> POST
-    Also supports generic tokens: 'pre', 'post'.
-    """
-    pre, post = None, None
-    for f in uploaded_files:
-        name = (f.name or "").lower()
-        if ("before" in name) or ("pre" in name):
-            pre = f
-        if ("after" in name) or ("post" in name):
-            post = post or f  # prefer explicit 'after'/'post' if both present
-    # if both same file matched both tokens (unlikely), keep them distinct by order
-    if (pre is None or post is None) and len(uploaded_files) == 2:
-        # fallback by order if names aren't informative
-        pre = pre or uploaded_files[0]
-        post = post or uploaded_files[1]
-    return pre, post
-
 # ========== uploads ==========
-st.subheader("Upload")
-multi_files = st.file_uploader("Upload .mnc file(s) — drop **before** and **after** (any order)", type=["mnc"], accept_multiple_files=True)
-
-pre_file = None
-post_file = None
-
-if multi_files:
-    pre_file, post_file = autopair_mnc(multi_files)
-    # Tiny status row
-    cA, cB = st.columns(2)
-    with cA:
-        st.write("**Detected PRE:** " + (pre_file.name if pre_file else "—"))
-    with cB:
-        st.write("**Detected POST:** " + (post_file.name if post_file else "—"))
-
-# If auto-pair didn’t yield both, offer manual slots
-if not pre_file:
-    pre_file = st.file_uploader("Or pick PRE .mnc", type=["mnc"], key="pre_single")
-if not post_file:
-    post_file = st.file_uploader("Or pick POST .mnc", type=["mnc"], key="post_single")
+c1, c2 = st.columns(2)
+# Accept .mnc and compressed .mnc.gz; also allow NIfTI (.nii / .nii.gz) if you have them.
+with c1: pre_file  = st.file_uploader("Upload PRE (.mnc / .mnc.gz / .nii / .nii.gz)",  type=["mnc","gz","nii"])
+with c2: post_file = st.file_uploader("Upload POST (.mnc / .mnc.gz / .nii / .nii.gz)", type=["mnc","gz","nii"])
+# Note: 'nii.gz' isn’t a separate extension token; allowing "gz" covers it. We preserve suffixes when saving.
 
 tag_file = st.file_uploader("Upload .tag (optional)", type=["tag"]) if want_tag else None
 run = st.button("Run Prediction", type="primary", disabled=not (pre_file and post_file))
