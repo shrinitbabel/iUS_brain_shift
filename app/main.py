@@ -120,7 +120,7 @@ async def diagnose(
     report["total_s"] = round(time.time() - t0, 3)
     return report
 
-@app.post("/predict", response_model=ShiftSummary)
+@app.post("/predict", response_model=ShiftSummary) 
 async def predict(
     pre: UploadFile = File(..., description="Pre-resection .mnc"),
     post: UploadFile = File(..., description="Post-resection .mnc"),
@@ -138,6 +138,15 @@ async def predict(
         try:
             pre_vol, _ = load_mnc_bytes(pre_bytes)
             post_vol, _ = load_mnc_bytes(post_bytes)
+
+            # 🔎 INSERT #1: log raw array dtype/shape before preprocessing
+            print(
+                "[PREDICT] loaded",
+                {"pre": {"dtype": str(pre_vol.dtype), "shape": pre_vol.shape},
+                 "post": {"dtype": str(post_vol.dtype), "shape": post_vol.shape}},
+                flush=True
+            )
+
         except Exception as e:
             tb = traceback.format_exc()
             print(f"[MINC-LOAD] {e}\n{tb}")
@@ -170,7 +179,6 @@ async def predict(
         )
 
     except HTTPException:
-        # already handled with detail + status
         raise
     except Exception as e:
         tb = traceback.format_exc()

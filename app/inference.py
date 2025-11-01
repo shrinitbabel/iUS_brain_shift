@@ -1,31 +1,28 @@
 # app/inference.py
-import numpy as np, torch, scipy.ndimage, gc
+import numpy as np, torch, scipy.ndimage
 from typing import Tuple
 
 TARGET_SHAPE = (128, 128, 128)
 
 def _normalize_01(vol: np.ndarray) -> np.ndarray:
-    vmin = float(vol.min()); vmax = float(vol.max())
+    vmin, vmax = float(vol.min()), float(vol.max())
     if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
         return np.zeros_like(vol, dtype=np.float32)
-    out = (vol - vmin) / (vmax - vmin)
-    return out.astype(np.float32, copy=False)
+    return ((vol - vmin) / (vmax - vmin)).astype(np.float32, copy=False)
 
 def _resize(vol: np.ndarray, target_shape=TARGET_SHAPE) -> np.ndarray:
-    # Use float16 during zoom to halve memory; cast back to float32 for torch
-    v16 = vol.astype(np.float16, copy=False)
-    factors = [target_shape[i] / v16.shape[i] for i in range(3)]
-    out16 = scipy.ndimage.zoom(v16, factors, order=1)       # trilinear
-    out = out16.astype(np.float32, copy=False)
-    return out
+    # keep float32; make sure it's contiguous to avoid extra copies
+    v = np.ascontiguousarray(vol, dtype=np.float32)
+    factors = [target_shape[i] / v.shape[i] for i in range(3)]
+    # order=1 is linear; prefilter=False reduces memory, valid for order<=1
+    out = scipy.ndimage.zoom(v, factors, order=1, mode="nearest", prefilter=False)
+    return out.astype(np.float32, copy=False)
 
 def preprocess_pair(pre_vol: np.ndarray, post_vol: np.ndarray) -> Tuple[torch.Tensor, torch.Tensor]:
-    pre = _resize(_normalize_01(pre_vol))
+    pre  = _resize(_normalize_01(pre_vol))
     post = _resize(_normalize_01(post_vol))
-    # Immediately free sources
-    del pre_vol, post_vol; gc.collect()
-    pre_t  = torch.from_numpy(pre)[None, None, ...]    # (1,1,D,H,W)
-    post_t = torch.from_numpy(post)[None, None, ...]
+    pre_t  = torch.from_numpy(pre).unsqueeze(0).unsqueeze(0).float()   # (1,1,D,H,W)
+    post_t = torch.from_numpy(post).unsqueeze(0).unsqueeze(0).float()
     return pre_t, post_t
 
 def summarize_deformation(flow: np.ndarray) -> Tuple[float, float]:
