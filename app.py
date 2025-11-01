@@ -34,6 +34,7 @@ with st.sidebar:
     st.header("Settings")
     st.caption(f"Model: {MODEL_PATH}")
     target_dim = st.select_slider("Target cube size", [96,112,128,160], value=TARGET_DEFAULT)
+    cam_dim = st.select_slider("Grad-CAM working size", [80, 96, 112, 128], value=96)
     coarse_max_dim = st.select_slider("Coarse subsample (caps largest dim)", [128,160,192,224,256], value=COARSE_DEFAULT)
     use_cuda   = st.toggle("Use CUDA if available", value=False) and torch.cuda.is_available()
     device_str = "cuda" if use_cuda else "cpu"
@@ -136,25 +137,55 @@ def draw_triptych(pre: np.ndarray, post: np.ndarray, heat: np.ndarray, axis: str
     fig3.colorbar(im, ax=ax3, shrink=0.8, label="heat")
     cols[2].pyplot(fig3); plt.close(fig3)
 
-def compute_gradcam(pre: np.ndarray, post: np.ndarray, device: torch.device):
-    """Grad-CAM using ExplainableUNet3D; run with grads enabled so hooks/gradients exist."""
+def compute_gradcam(pre: np.ndarray, post: np.ndarray, device: torch.device, cam_dim: int, view_dim: int):
+    """Grad-CAM with downscaled inputs to cut memory; upsample CAM for display."""
     import torch.nn.functional as F
-    modelGC = load_model_for_gradcam(MODEL_PATH, str(device))
-    with torch.enable_grad():
-        pre_t  = torch.from_numpy(pre)[None, None, ...].to(device).requires_grad_(True)
-        post_t = torch.from_numpy(post)[None, None, ...].to(device).requires_grad_(True)
-        modelGC.zero_grad()
-        out = modelGC(pre_t, post_t)                   # (1,3,D,H,W)  (forward sets self.activations & hook)
-        target = out.norm(p=2, dim=1).mean()          # scalar objective
-        target.backward()
+    try:
+        modelGC = load_model_for_gradcam(MODEL_PATH, str(device))
 
-        grads = modelGC.get_activations_gradient()    # (1,C,D,H,W)
-        acts  = modelGC.get_activations().detach()    # (1,C,D,H,W)
-        weights = grads.mean(dim=(2,3,4), keepdim=True)
-        cam = (weights * acts).sum(dim=1).squeeze(0)  # (D,H,W)
-        cam = F.relu(cam)
-        cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
-        return cam.detach().cpu().numpy().astype(np.float32)
+        # downscale to cam_dim for Grad-CAM
+        def _resize(v, d): 
+            f = [d / v.shape[i] for i in range(3)]
+            return scipy.ndimage.zoom(np.ascontiguousarray(v, np.float32), f, order=1, mode="nearest", prefilter=False)
+
+        pre_small  = _resize(pre,  cam_dim)
+        post_small = _resize(post, cam_dim)
+
+        with torch.enable_grad():
+            pre_t  = torch.from_numpy(pre_small)[None, None, ...].to(device).requires_grad_(True)
+            post_t = torch.from_numpy(post_small)[None, None, ...].to(device).requires_grad_(True)
+
+            modelGC.zero_grad()
+            out = modelGC(pre_t, post_t)               # (1,3,d,h,w)
+            target = out.norm(p=2, dim=1).mean()       # scalar objective
+            target.backward()
+
+            grads = modelGC.get_activations_gradient() # (1,C,d,h,w)
+            acts  = modelGC.get_activations().detach() # (1,C,d,h,w)
+            weights = grads.mean(dim=(2,3,4), keepdim=True)
+            cam = (weights * acts).sum(dim=1).squeeze(0)  # (d,h,w)
+            cam = F.relu(cam)
+            cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+            cam_np = cam.detach().cpu().numpy().astype(np.float32)
+
+        # upsample CAM to viewer size (target_dim)
+        if cam_np.shape != (view_dim, view_dim, view_dim):
+            f = [view_dim / cam_np.shape[i] for i in range(3)]
+            cam_np = scipy.ndimage.zoom(cam_np, f, order=1, mode="nearest", prefilter=False)
+
+        # cleanup
+        del pre_t, post_t, out, cam, grads, acts
+        torch.cuda.empty_cache() if device.type == "cuda" else None
+        gc.collect()
+        return cam_np
+
+    except MemoryError:
+        # don’t crash the app; surface a graceful warning
+        st.warning("Grad-CAM ran out of memory at this size. Try a smaller ‘Grad-CAM working size’.")
+        return None
+    except Exception as e:
+        st.warning(f"Grad-CAM failed: {e}")
+        return None
 
 # ========== uploads ==========
 c1, c2 = st.columns(2)
@@ -239,14 +270,10 @@ if res is not None:
 
         # Compute Grad-CAM once on demand
         if heat_source == "Grad-CAM" and HAS_EXPLAIN and st.session_state.gradcam is None:
-            try:
-                with st.spinner("Computing Grad-CAM…"):
-                    device = torch.device(device_str)
-                    st.session_state.gradcam = compute_gradcam(res["pre"], res["post"], device)
-                st.success("Grad-CAM ready.")
-            except Exception as e:
-                st.session_state.gradcam = None
-                st.warning(f"Grad-CAM failed: {e}")
+            with st.spinner("Computing Grad-CAM…"):
+                device = torch.device(device_str)
+                st.session_state.gradcam = compute_gradcam(res["pre"], res["post"], device, cam_dim=cam_dim, view_dim=target_dim)
+
 
     with vcol2:
         heat = res["mag"] if (heat_source != "Grad-CAM" or st.session_state.gradcam is None) else st.session_state.gradcam
