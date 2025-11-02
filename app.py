@@ -116,6 +116,8 @@ with hdr_r:
         unsafe_allow_html=True
     )
 
+# Session state handle
+ss = st.session_state
 # Session state
 if "result" not in ss: ss.result = None
 if "gradcam" not in ss: ss.gradcam = None
@@ -184,7 +186,7 @@ def read_minc_stream_to_array(uploaded_file, max_dim: int):
         path = tmp.name
     try:
         load_path = path
-        if ext.endswith(".mnc") is False and ext.endswith(".mnc.gz"):
+        if ext.endswith(".mnc.gz"):
             with tempfile.NamedTemporaryFile(suffix=".mnc", delete=False) as unz:
                 with gzip.open(path, "rb") as src:
                     shutil.copyfileobj(src, unz)
@@ -250,13 +252,11 @@ def find_sample_pair() -> tuple[Path, Path] | None:
 def run_inference(pre_arr: np.ndarray, post_arr: np.ndarray, device: torch.device, model: torch.nn.Module, dim: int):
     pre  = resize_cube(normalize01(pre_arr), dim)
     post = resize_cube(normalize01(post_arr), dim)
-    pre_t  = torch.from_numpy(pre)[1-1:None]  # keep shape (1,1,D,H,W)
-    pre_t  = pre_t.to(device)
-    post_t = torch.from_numpy(post)[1-1:None]
-    post_t = post_t.to(device)
-    flow_t = model(pre_t, post_t)                    # (1,3,D,H,W)
-    flow   = flow_t.detach().cpu().numpy()[0]        # (3,D,H,W)
-    mag    = np.linalg.norm(flow, axis=0)            # (D,H,W)
+    pre_t  = torch.from_numpy(pre)[None, None, ...].to(device)   # (1,1,D,H,W)
+    post_t = torch.from_numpy(post)[None, None, ...].to(device)  # (1,1,D,H,W)
+    flow_t = model(pre_t, post_t)                                 # (1,3,D,H,W)
+    flow   = flow_t.detach().cpu().numpy()[0]                     # (3,D,H,W)
+    mag    = np.linalg.norm(flow, axis=0)                         # (D,H,W)
     mean_mm, max_mm = float(mag.mean()), float(mag.max())
     return mean_mm, max_mm, mag, flow, pre, post
 
@@ -364,11 +364,7 @@ if run:
         with st.status("Loading volumes…", expanded=False) as s:
             if use_sample and sample_pair:
                 pre_arr,  pre_aff,  pre_shape,  pre_stride  = read_minc_path_to_array(sample_pair[0], max_dim=coarse_max_dim)
-                post_arr, post_aff, post_shape, post_stride = read_minc_stream_to_array(post_file, max_dim=coarse_max_dim)
-                # If using sample, but user uploaded post too? Keep as is; adjust logic as you prefer.
-                if not use_sample and pre_file and post_file:
-                    pre_arr,  pre_aff,  pre_shape,  pre_stride  = read_minc_stream_to_array(pre_file,  max_dim=coarse_max_dim)
-                    post_arr, post_aff, post_shape, post_stride = read_minc_stream_to_array(post_file, max_dim=coarse_max_dim)
+                post_arr, post_aff, post_shape, post_stride = read_minc_path_to_array(sample_pair[1], max_dim=coarse_max_dim)
             else:
                 pre_arr,  pre_aff,  pre_shape,  pre_stride  = read_minc_stream_to_array(pre_file,  max_dim=coarse_max_dim)
                 post_arr, post_aff, post_shape, post_stride = read_minc_stream_to_array(post_file, max_dim=coarse_max_dim)
