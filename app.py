@@ -318,6 +318,38 @@ def compute_gradcam(pre: np.ndarray, post: np.ndarray, device: torch.device, cam
         st.warning(f"Grad-CAM failed: {e}. Showing flow magnitude instead.")
         return None
 
+def slice2d(vol: np.ndarray, axis: str, idx: int) -> np.ndarray:
+    """
+    Return a 2D slice from a (D,H,W) volume along the chosen axis.
+    axis: 'axial' (Z), 'coronal' (Y), 'sagittal' (X)
+    """
+    if axis == "axial":     # Z index
+        return vol[idx, :, :]
+    elif axis == "coronal": # Y index
+        return vol[:, idx, :]
+    else:                   # sagittal -> X index
+        return vol[:, :, idx]
+
+def draw_triptych_big(pre2d: np.ndarray, post2d: np.ndarray, heat2d: np.ndarray,
+                      axis: str, idx: int, alpha: float = 0.5) -> None:
+    """
+    Render PRE, POST, and PRE+overlay (heat) as large side-by-side figures.
+    """
+    import matplotlib.pyplot as plt
+    def _panel(img, title, overlay=None, alpha=0.5):
+        fig, ax = plt.subplots(figsize=(8.5, 8.5))
+        ax.imshow(img, cmap="gray", origin="lower")
+        if overlay is not None:
+            im = ax.imshow(overlay, origin="lower", alpha=alpha)
+            fig.colorbar(im, ax=ax, shrink=0.72, label="heat")
+        ax.set_title(title); ax.axis("off")
+        st.pyplot(fig); plt.close(fig)
+
+    c1, c2, c3 = st.columns([1,1,1])
+    with c1: _panel(pre2d,  f"PRE • {axis} {idx}")
+    with c2: _panel(post2d, f"POST • {axis} {idx}")
+    with c3: _panel(pre2d,  f"Overlay • {axis} {idx}", overlay=heat2d, alpha=alpha)
+
 # ========== uploads ==========
 c1, c2 = st.columns(2)
 with c1:
