@@ -1,6 +1,9 @@
 # app.py
 # ─────────────────────────────────────────
 # Keep BLAS/OMP single-threaded for stability on tiny hosts
+import time
+import psutil
+PAGE_START = time.time()
 import os
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
@@ -115,6 +118,7 @@ with hdr_r:
         """,
         unsafe_allow_html=True
     )
+st.caption(f"⏱️ Page ready in {time.time() - PAGE_START:.2f} s")
 
 # Session state handle
 ss = st.session_state
@@ -393,6 +397,8 @@ if run:
         device = torch.device(device_str)
         model_inf = load_model_for_inference(MODEL_PATH, device_str)
 
+
+        t0 = time.time()
         with st.status("Loading volumes…", expanded=False) as s:
             if use_sample and sample_pair:
                 pre_arr,  pre_aff,  pre_shape,  pre_stride  = read_minc_path_to_array(sample_pair[0], max_dim=coarse_max_dim)
@@ -400,12 +406,14 @@ if run:
             else:
                 pre_arr,  pre_aff,  pre_shape,  pre_stride  = read_minc_stream_to_array(pre_file,  max_dim=coarse_max_dim)
                 post_arr, post_aff, post_shape, post_stride = read_minc_stream_to_array(post_file, max_dim=coarse_max_dim)
-
+            t_load = time.time() - t0
             s.update(label=f"Loaded. PRE {pre_shape}→/×{pre_stride}, POST {post_shape}→/×{post_stride}")
 
+        t1 = time.time()
         with st.status("Running inference…", expanded=False) as s:
             dim = target_dim
             mean_mm, max_mm, mag, flow, pre128, post128 = run_inference(pre_arr, post_arr, device, model_inf, dim)
+            t_infer = time.time() - t1
             s.update(label="Inference complete.")
 
         # Always try Grad-CAM (fixed size = 48)
@@ -435,6 +443,56 @@ if run:
             "gt_mean": gt_mean, "gt_max": gt_max,
             "dim": dim
         }
+
+
+        # ---- MEMORY (RAM) ----
+        process = psutil.Process()
+        ram_mb = process.memory_info().rss / (1024 ** 2)
+
+        # ---- UI RESPONSIVENESS (approx FPS) ----
+        # Not a true video FPS; a quick proxy based on in-memory slice access timing
+        frames = min(40, mag.shape[0])
+        t2 = time.time()
+        _tmp = 0.0
+        for i in range(frames):
+            # simulate a 2D pull like viewer does (axial)
+            _slice = mag[i, :, :]
+            _tmp += float(_slice.mean())  # cheap op to avoid being optimized out
+        fps_est = frames / (time.time() - t2 + 1e-9)
+
+        # ---- STORE metrics on session and log to CSV ----
+        ss.metrics = {
+            "page_load_s": round(PAGE_START and (t0 - PAGE_START), 3),
+            "load_s": round(t_load, 3),
+            "infer_s": round(t_infer, 3),
+            "ram_mb": round(ram_mb, 1),
+            "fps_est": round(fps_est, 1),
+            "shape_pre": tuple(pre_shape),
+            "shape_post": tuple(post_shape),
+            "target_dim": dim,
+            "device": str(device),
+        }
+
+        # Append to a temp CSV for download
+        try:
+            import csv
+            row = {
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                **ss.metrics,
+                "mean_mm": round(mean_mm, 3),
+                "max_mm": round(max_mm, 3),
+                "use_sample": bool(use_sample),
+            }
+            csv_path = "/tmp/ius_metrics.csv"
+            write_header = not os.path.exists(csv_path)
+            with open(csv_path, "a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=row.keys())
+                if write_header: writer.writeheader()
+                writer.writerow(row)
+            ss.metrics_csv = csv_path
+        except Exception:
+            ss.metrics_csv = None
+
         ss.gradcam = gcam
         ss.gcam_ok = gcam_ok
         ss.playing = True
@@ -466,6 +524,38 @@ if res is not None:
         m3.write(f"Volume (after resize): {res['mag'].shape}")
 
     st.subheader("Viewer")
+
+     # Runtime diagnostics
+    if hasattr(ss, "metrics"):
+        d = ss.metrics
+        mcol = st.expander("Runtime diagnostics", expanded=False)
+        with mcol:
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.write(f"**Page load:** {d['page_load_s']:.2f} s")
+                st.write(f"**Load + preprocess:** {d['load_s']:.2f} s")
+            with c2:
+                st.write(f"**Inference:** {d['infer_s']:.2f} s")
+                st.write(f"**RAM:** {d['ram_mb']:.1f} MB")
+            with c3:
+                st.write(f"**UI responsiveness (est):** {d['fps_est']:.1f} FPS")
+                st.write(f"**Device:** {d['device']}")
+
+            # Show upload cap (from config or default you set)
+            max_mb = int(os.getenv("STREAMLIT_MAX_UPLOAD_MB", "2000"))
+            st.write(f"**Upload limit:** up to {max_mb} MB per file")
+
+            # Download CSV log of metrics
+            if getattr(ss, "metrics_csv", None) and os.path.exists(ss.metrics_csv):
+                with open(ss.metrics_csv, "rb") as fh:
+                    st.download_button(
+                        "Download metrics log (CSV)",
+                        data=fh,
+                        file_name="ius_metrics.csv",
+                        type="secondary"
+                    )
+
+
 
     # Controls
     vcol1, _ = st.columns([1,3])
