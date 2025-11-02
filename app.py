@@ -38,7 +38,7 @@ MODEL_PATH      = "models/brain_shift_model_fulldataset.pt"  # FULL DATASET MODE
 TARGET_DEFAULT  = 128
 COARSE_DEFAULT  = 192
 CAM_FIXED       = 48   # Grad-CAM working cube (fixed)
-TEST_DIR        = Path("Test")
+TEST_DIR        = Path("Test/02")
 
 # ========== UI ==========
 st.set_page_config(page_title="Brain Shift (iUS) – Streamlit Demo", layout="wide")
