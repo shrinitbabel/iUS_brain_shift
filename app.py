@@ -9,6 +9,7 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import sys, gc, tempfile, shutil, time
 from pathlib import Path
+import gzip
 import numpy as np
 import torch
 torch.set_num_threads(1)
@@ -36,7 +37,8 @@ except Exception:
 MODEL_PATH      = "models/brain_shift_model_fulldataset.pt"  # FULL DATASET MODEL only
 TARGET_DEFAULT  = 128
 COARSE_DEFAULT  = 192
-CAM_FIXED       = 48   # Grad-CAM working cube (fixed as requested)
+CAM_FIXED       = 48   # Grad-CAM working cube (fixed)
+TEST_DIR        = Path("Test")
 
 # ========== UI ==========
 st.set_page_config(page_title="Brain Shift (iUS) – Streamlit Demo", layout="wide")
@@ -59,6 +61,9 @@ if "gcam_ok" not in ss: ss.gcam_ok = False  # did Grad-CAM succeed last run?
 with st.sidebar:
     st.header("Settings")
     st.caption(f"Model: {MODEL_PATH}")
+
+    use_sample = st.toggle("Use built-in sample (no upload)", value=False,
+                           help="Loads Test/pre.* and Test/post.* from the repo (mnc / mnc.gz / nii / nii.gz).")
 
     # Hide power knobs; keep them simple
     with st.expander("Advanced (power users)", expanded=False):
@@ -102,17 +107,9 @@ def read_minc_stream_to_array(uploaded_file, max_dim: int):
     Stream UploadedFile to a temp file (preserving extension), load via nibabel (mmap),
     and coarse-subsample. If file is .mnc.gz, transparently gunzip to .mnc and load.
     """
-    import gzip
-    from pathlib import Path
-    import nibabel as nib
-    import numpy as np
-    import tempfile, shutil, os
-
-    # Preserve original suffixes so nibabel can sniff NIfTI; MINC gz needs manual gunzip
     name = uploaded_file.name or "volume.mnc"
-    suffix = "".join(Path(name).suffixes) or ".mnc"  # e.g., ".mnc.gz", ".nii.gz", ".mnc"
+    suffix = "".join(Path(name).suffixes) or ".mnc"
 
-    # Write the uploaded bytes to disk
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         uploaded_file.seek(0)
         shutil.copyfileobj(uploaded_file, tmp)
@@ -121,7 +118,6 @@ def read_minc_stream_to_array(uploaded_file, max_dim: int):
 
     try:
         load_path = path
-        # If this is a gzipped MINC, gunzip to a real .mnc first
         if suffix.endswith(".mnc.gz"):
             with tempfile.NamedTemporaryFile(suffix=".mnc", delete=False) as unz:
                 with gzip.open(path, "rb") as src:
@@ -131,20 +127,65 @@ def read_minc_stream_to_array(uploaded_file, max_dim: int):
 
         img = nib.load(load_path, mmap=True)
         shape = img.shape
-
-        # coarse subsample so largest dim <= max_dim
         factor = max(1, int(np.ceil(max(shape) / max_dim)))
         slicer = tuple(slice(None, None, factor) for _ in shape)
         arr = np.asarray(img.dataobj[slicer], dtype=np.float32, order="C")
         return arr, img.affine, shape, factor
-
     finally:
-        # Clean up temp files
         try: os.remove(path)
         except Exception: pass
         if 'load_path' in locals() and load_path != path:
             try: os.remove(load_path)
             except Exception: pass
+
+@st.cache_data(show_spinner=False)
+def read_minc_path_to_array(path_in: Path, max_dim: int):
+    """
+    Load from a local path with robust .mnc.gz handling and coarse subsample.
+    """
+    path_in = Path(path_in)
+    if not path_in.exists():
+        raise FileNotFoundError(f"Sample not found: {path_in}")
+
+    # If .mnc.gz → gunzip to temp .mnc, else let nibabel sniff (.mnc, .nii, .nii.gz)
+    load_path = str(path_in)
+    tmp_to_clean = None
+    try:
+        if str(path_in).endswith(".mnc.gz"):
+            with tempfile.NamedTemporaryFile(suffix=".mnc", delete=False) as unz:
+                with gzip.open(str(path_in), "rb") as src:
+                    shutil.copyfileobj(src, unz)
+                unz.flush()
+                load_path = unz.name
+                tmp_to_clean = unz.name
+
+        img = nib.load(load_path, mmap=True)
+        shape = img.shape
+        factor = max(1, int(np.ceil(max(shape) / max_dim)))
+        slicer = tuple(slice(None, None, factor) for _ in shape)
+        arr = np.asarray(img.dataobj[slicer], dtype=np.float32, order="C")
+        return arr, img.affine, shape, factor
+    finally:
+        if tmp_to_clean:
+            try: os.remove(tmp_to_clean)
+            except Exception: pass
+
+# ========== sample detection ==========
+def find_sample_pair() -> tuple[Path, Path] | None:
+    """
+    Try common sample names in Test/ for pre/post with multiple extensions.
+    Order matters: prefer .mnc, then .mnc.gz, then .nii.gz, then .nii.
+    """
+    candidates = [
+        (TEST_DIR / "pre.mnc",      TEST_DIR / "post.mnc"),
+        (TEST_DIR / "pre.mnc.gz",   TEST_DIR / "post.mnc.gz"),
+        (TEST_DIR / "pre.nii.gz",   TEST_DIR / "post.nii.gz"),
+        (TEST_DIR / "pre.nii",      TEST_DIR / "post.nii"),
+    ]
+    for p, q in candidates:
+        if p.exists() and q.exists():
+            return (p, q)
+    return None
 
 # ========== utils ==========
 def normalize01(v: np.ndarray) -> np.ndarray:
@@ -237,15 +278,36 @@ def compute_gradcam(pre: np.ndarray, post: np.ndarray, device: torch.device, cam
         st.warning(f"Grad-CAM failed: {e}. Falling back to flow magnitude.")
         return None
 
-# ========== uploads ==========
+# ========== uploads / sample ==========
 c1, c2 = st.columns(2)
-# Accept .mnc and compressed .mnc.gz; also allow NIfTI (.nii / .nii.gz) if you have them.
-with c1: pre_file  = st.file_uploader("Upload PRE (.mnc / .mnc.gz / .nii / .nii.gz)",  type=["mnc","gz","nii"])
-with c2: post_file = st.file_uploader("Upload POST (.mnc / .mnc.gz / .nii / .nii.gz)", type=["mnc","gz","nii"])
-# Note: 'nii.gz' isn’t a separate extension token; allowing "gz" covers it. We preserve suffixes when saving.
+with c1:
+    pre_file  = st.file_uploader(
+        "Upload PRE (.mnc / .mnc.gz / .nii / .nii.gz)",
+        type=["mnc","gz","nii"],
+        disabled=use_sample
+    )
+with c2:
+    post_file = st.file_uploader(
+        "Upload POST (.mnc / .mnc.gz / .nii / .nii.gz)",
+        type=["mnc","gz","nii"],
+        disabled=use_sample
+    )
 
-tag_file = st.file_uploader("Upload .tag (optional)", type=["tag"]) if want_tag else None
-run = st.button("Run Prediction", type="primary", disabled=not (pre_file and post_file))
+sample_pair = find_sample_pair() if use_sample else None
+if use_sample:
+    if sample_pair:
+        st.info(f"Using sample: {sample_pair[0].name} + {sample_pair[1].name}")
+    else:
+        st.error("No sample files found in ./Test (expected pre/post with .mnc, .mnc.gz, .nii, or .nii.gz)")
+        use_sample = False  # fall back to uploads
+
+tag_file = st.file_uploader("Upload .tag (optional)", type=["tag"]) if (want_tag and not use_sample) else None
+
+run = st.button(
+    "Run Prediction",
+    type="primary",
+    disabled=not (use_sample or (pre_file and post_file))
+)
 
 # ========== run ONCE ==========
 if run:
@@ -254,8 +316,12 @@ if run:
         model_inf = load_model_for_inference(MODEL_PATH, device_str)
 
         with st.status("Loading volumes…", expanded=False) as s:
-            pre_arr,  pre_aff,  pre_shape,  pre_stride  = read_minc_stream_to_array(pre_file,  max_dim=coarse_max_dim)
-            post_arr, post_aff, post_shape, post_stride = read_minc_stream_to_array(post_file, max_dim=coarse_max_dim)
+            if use_sample and sample_pair:
+                pre_arr,  pre_aff,  pre_shape,  pre_stride  = read_minc_path_to_array(sample_pair[0], max_dim=coarse_max_dim)
+                post_arr, post_aff, post_shape, post_stride = read_minc_path_to_array(sample_pair[1], max_dim=coarse_max_dim)
+            else:
+                pre_arr,  pre_aff,  pre_shape,  pre_stride  = read_minc_stream_to_array(pre_file,  max_dim=coarse_max_dim)
+                post_arr, post_aff, post_shape, post_stride = read_minc_stream_to_array(post_file, max_dim=coarse_max_dim)
             s.update(label=f"Loaded. PRE {pre_shape}→/×{pre_stride}, POST {post_shape}→/×{post_stride}")
 
         with st.status("Running inference…", expanded=False) as s:
@@ -267,9 +333,9 @@ if run:
         gcam = compute_gradcam(pre128, post128, device, cam_dim=CAM_FIXED, view_dim=dim)
         gcam_ok = gcam is not None
 
-        # Optional GT stats
+        # Optional GT stats (only when user uploaded .tag; we do not bundle sample .tag)
         gt_mean = gt_max = None
-        if tag_file and parse_tag_file_disk is not None:
+        if tag_file and parse_tag_file_disk is not None and not use_sample:
             with tempfile.NamedTemporaryFile(suffix=".tag", delete=False) as tmp:
                 tmp.write(tag_file.getvalue()); tmp.flush(); tag_path = tmp.name
             try:
@@ -345,7 +411,7 @@ if res is not None:
         with pcol2:
             fps = st.slider("FPS", 1, 20, 6)
 
-    # Big viewer under controls — always prefer Grad-CAM if available
+    # Big viewer under controls — prefer Grad-CAM if available
     st.markdown("---")
     heat_vol = ss.gradcam if (ss.gcam_ok and ss.gradcam is not None) else res["mag"]
     pre2d  = slice2d(res["pre"],  ss.axis, ss.last_idx)
