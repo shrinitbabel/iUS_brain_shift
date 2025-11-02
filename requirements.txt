@@ -6,3 +6,4 @@ h5py>=3.10
 matplotlib>=3.10
 scikit-image>=0.25
 torch==2.9.0
+psutil>=5.9.0
