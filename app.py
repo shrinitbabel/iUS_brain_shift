@@ -41,8 +41,12 @@ CAM_FIXED       = 48  # Grad-CAM working cube
 TEST_DIR        = Path("Test/02")  # adjust if your sample lives elsewhere
 
 # ========== UI ==========
-st.set_theme("light")  # optional, keeps things simple
-st.set_page_config(page_title="Brain Shift (iUS) – Streamlit Demo", layout="wide")
+st.set_page_config(
+    page_title="Brain Shift (iUS) – Streamlit Demo",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    page_icon="🧠",
+)
 
 # Inject minimal CSS: font + gradient-shine button + some polish
 st.markdown("""
