@@ -1,6 +1,6 @@
 # app.py
 # ─────────────────────────────────────────
-# Keep BLAS/OMP single-threaded for stability on small hosts
+# Keep BLAS/OMP single-threaded for stability on tiny hosts
 import os
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
@@ -37,19 +37,82 @@ except Exception:
 MODEL_PATH      = "models/brain_shift_model_fulldataset.pt"  # FULL DATASET MODEL only
 TARGET_DEFAULT  = 128
 COARSE_DEFAULT  = 192
-CAM_FIXED       = 48   # Grad-CAM working cube (fixed)
-TEST_DIR        = Path("Test/02")
+CAM_FIXED       = 48  # Grad-CAM working cube
+TEST_DIR        = Path("Test/02")  # adjust if your sample lives elsewhere
 
 # ========== UI ==========
+st.set_theme("light")  # optional, keeps things simple
 st.set_page_config(page_title="Brain Shift (iUS) – Streamlit Demo", layout="wide")
-st.markdown(
-    "<h1 style='display:flex;align-items:center;gap:.5rem'>"
-    "🧠 Brain Shift Prediction (iUS) – Streamlit Demo</h1>",
-    unsafe_allow_html=True,
-)
+
+# Inject minimal CSS: font + gradient-shine button + some polish
+st.markdown("""
+<style>
+/* Match Tailwind-ish font stack for visual parity with babels.ai */
+html, body, [class*="css"] {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI,
+               Roboto, Helvetica Neue, Arial, "Noto Sans", "Apple Color Emoji",
+               "Segoe UI Emoji","Segoe UI Symbol";
+}
+
+/* Big title spacing */
+h1 { margin-bottom: 1rem; }
+
+/* Pretty gradient-shine button (purple → fuchsia → red) */
+.btn-gradient {
+  --g1: #7c3aed;  /* purple-600 */
+  --g2: #d946ef;  /* fuchsia-500 */
+  --g3: #ef4444;  /* red-500 */
+  position: relative;
+  display: inline-flex; align-items: center; gap: .5rem;
+  padding: 0.6rem 1rem;
+  border-radius: 9999px;
+  color: #fff !important;
+  text-decoration: none !important;
+  background: linear-gradient(90deg, var(--g1), var(--g2), var(--g3));
+  background-size: 200% 200%;
+  transition: transform .15s ease, box-shadow .25s ease, opacity .25s ease;
+  box-shadow: 0 6px 18px rgba(124,58,237,.25);
+}
+.btn-gradient:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(124,58,237,.35);
+}
+.btn-gradient .shine {
+  position: absolute; inset: 0; content: "";
+  background: linear-gradient(120deg, rgba(255,255,255,0) 0%,
+                                         rgba(255,255,255,.35) 50%,
+                                         rgba(255,255,255,0) 100%);
+  transform: translateX(-100%);
+  transition: transform .8s ease;
+}
+.btn-gradient:hover .shine { transform: translateX(100%); }
+
+/* Make triptych big and neat */
+.block-divider { border-top: 1px solid #e5e7eb; margin: 1rem 0 0.5rem; }
+</style>
+""", unsafe_allow_html=True)
+
+# Header with return button
+hdr_l, hdr_r = st.columns([3, 1])
+with hdr_l:
+    st.markdown(
+        "<h1>🧠 <strong>Brain Shift Prediction (iUS)</strong> — Streamlit Demo</h1>",
+        unsafe_allow_html=True
+    )
+with hdr_r:
+    st.markdown(
+        """
+        <div style="display:flex;justify-content:flex-end">
+          <a class="btn-gradient" href="https://www.babels.ai" target="_self" title="Back to Babels.ai">
+            ← Return&nbsp;to&nbsp;Babels.ai
+            <span class="shine"></span>
+          </a>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 # Session state
-ss = st.session_state
 if "result" not in ss: ss.result = None
 if "gradcam" not in ss: ss.gradcam = None
 if "playing" not in ss: ss.playing = False
@@ -62,10 +125,12 @@ with st.sidebar:
     st.header("Settings")
     st.caption(f"Model: {MODEL_PATH}")
 
-    use_sample = st.toggle("Use built-in sample (no upload)", value=False,
-                           help="Loads Test/pre.* and Test/post.* from the repo (mnc / mnc.gz / nii / nii.gz).")
+    use_sample = st.toggle(
+        "Use built-in sample (no upload)",
+        value=False,
+        help="Loads sample from ./Test/02 (pre.* & post.*: .mnc / .mnc.gz / .nii / .nii.gz)"
+    )
 
-    # Hide power knobs; keep them simple
     with st.expander("Advanced (power users)", expanded=False):
         st.write(
             "- **Target cube size**: internal resize before inference. "
@@ -73,8 +138,8 @@ with st.sidebar:
             "- **Coarse subsample**: caps the largest dimension *before* heavy ops to cut memory.\n"
             "- **Grad-CAM size**: fixed to 48 for reliability."
         )
-        target_dim = st.select_slider("Target cube size", [96,112,128,160], value=TARGET_DEFAULT)
-        coarse_max_dim = st.select_slider("Coarse subsample (caps largest dim)", [128,160,192,224,256], value=COARSE_DEFAULT)
+        target_dim = st.select_slider("Target cube size", [96, 112, 128, 160], value=TARGET_DEFAULT)
+        coarse_max_dim = st.select_slider("Coarse subsample (caps largest dim)", [128, 160, 192, 224, 256], value=COARSE_DEFAULT)
         st.caption("Grad-CAM working size: 48 (fixed)")
 
     use_cuda   = st.toggle("Use CUDA if available", value=False) and torch.cuda.is_available()
@@ -103,28 +168,24 @@ def load_model_for_gradcam(weights: str, device: str = "cpu"):
 
 @st.cache_data(show_spinner=False)
 def read_minc_stream_to_array(uploaded_file, max_dim: int):
-    """
-    Stream UploadedFile to a temp file (preserving extension), load via nibabel (mmap),
-    and coarse-subsample. If file is .mnc.gz, transparently gunzip to .mnc and load.
-    """
+    """Stream UploadedFile to temp, robustly load with nibabel, coarse-subsample."""
     name = uploaded_file.name or "volume.mnc"
-    suffix = "".join(Path(name).suffixes) or ".mnc"
-
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+    suffix = "".join(Path(name).split('.')[-2:])  # keep extension for naming
+    # Use actual suffix from name for temp file to preserve extension
+    ext = "".join(Path(name).suffixes) or ".mnc"
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
         uploaded_file.seek(0)
         shutil.copyfileobj(uploaded_file, tmp)
         tmp.flush()
         path = tmp.name
-
     try:
         load_path = path
-        if suffix.endswith(".mnc.gz"):
+        if ext.endswith(".mnc") is False and ext.endswith(".mnc.gz"):
             with tempfile.NamedTemporaryFile(suffix=".mnc", delete=False) as unz:
                 with gzip.open(path, "rb") as src:
                     shutil.copyfileobj(src, unz)
                 unz.flush()
                 load_path = unz.name
-
         img = nib.load(load_path, mmap=True)
         shape = img.shape
         factor = max(1, int(np.ceil(max(shape) / max_dim)))
@@ -140,16 +201,11 @@ def read_minc_stream_to_array(uploaded_file, max_dim: int):
 
 @st.cache_data(show_spinner=False)
 def read_minc_path_to_array(path_in: Path, max_dim: int):
-    """
-    Load from a local path with robust .mnc.gz handling and coarse subsample.
-    """
+    """Load from a local path with robust .mnc.gz handling and coarse subsample."""
     path_in = Path(path_in)
     if not path_in.exists():
         raise FileNotFoundError(f"Sample not found: {path_in}")
-
-    # If .mnc.gz → gunzip to temp .mnc, else let nibabel sniff (.mnc, .nii, .nii.gz)
-    load_path = str(path_in)
-    tmp_to_clean = None
+    load_path = str(path_in); tmp_to_clean = None
     try:
         if str(path_in).endswith(".mnc.gz"):
             with tempfile.NamedTemporaryFile(suffix=".mnc", delete=False) as unz:
@@ -158,7 +214,6 @@ def read_minc_path_to_array(path_in: Path, max_dim: int):
                 unz.flush()
                 load_path = unz.name
                 tmp_to_clean = unz.name
-
         img = nib.load(load_path, mmap=True)
         shape = img.shape
         factor = max(1, int(np.ceil(max(shape) / max_dim)))
@@ -173,21 +228,34 @@ def read_minc_path_to_array(path_in: Path, max_dim: int):
 # ========== sample detection ==========
 def find_sample_pair() -> tuple[Path, Path] | None:
     """
-    Try common sample names in Test/ for pre/post with multiple extensions.
-    Order matters: prefer .mnc, then .mnc.gz, then .nii.gz, then .nii.
+    Try common sample names in Test/ or Test/02 for pre/post with multiple extensions.
+    Order: .mnc → .mnc.gz → .nii.gz → .nii
     """
-    candidates = [
-        (TEST_DIR / "pre.mnc",      TEST_DIR / "post.mnc"),
-        (TEST_DIR / "pre.mnc.gz",   TEST_DIR / "post.mnc.gz"),
-        (TEST_DIR / "pre.nii.gz",   TEST_DIR / "post.nii.gz"),
-        (TEST_DIR / "pre.nii",      TEST_DIR / "post.nii"),
-    ]
-    for p, q in candidates:
-        if p.exists() and q.exists():
-            return (p, q)
+    bases = [Path("Test"), Path("Test/02"), TEST_DIR]
+    exts  = [".mnc", ".mnc.gz", ".nii.gz", ".nii"]
+    for base in bases:
+        for ext in exts:
+            p = base / f"pre{ext}"
+            q = base / f"post{ext}"
+            if p.exists() and q.exists():
+                return (p, q)
     return None
 
-# ========== utils ==========
+# ========== core ----------
+@torch.no_grad()
+def run_inference(pre_arr: np.ndarray, post_arr: np.ndarray, device: torch.device, model: torch.nn.Module, dim: int):
+    pre  = resize_cube(normalize01(pre_arr), dim)
+    post = resize_cube(normalize01(post_arr), dim)
+    pre_t  = torch.from_numpy(pre)[1-1:None]  # keep shape (1,1,D,H,W)
+    pre_t  = pre_t.to(device)
+    post_t = torch.from_numpy(post)[1-1:None]
+    post_t = post_t.to(device)
+    flow_t = model(pre_t, post_t)                    # (1,3,D,H,W)
+    flow   = flow_t.detach().cpu().numpy()[0]        # (3,D,H,W)
+    mag    = np.linalg.norm(flow, axis=0)            # (D,H,W)
+    mean_mm, max_mm = float(mag.mean()), float(mag.max())
+    return mean_mm, max_mm, mag, flow, pre, post
+
 def normalize01(v: np.ndarray) -> np.ndarray:
     vmin, vmax = float(v.min()), float(v.max())
     if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
@@ -199,38 +267,6 @@ def resize_cube(v: np.ndarray, dim: int) -> np.ndarray:
     f = [dim / v.shape[i] for i in range(3)]
     out = scipy.ndimage.zoom(v, f, order=1, mode="nearest", prefilter=False)
     return out.astype(np.float32, copy=False)
-
-@torch.no_grad()
-def run_inference(pre_arr: np.ndarray, post_arr: np.ndarray, device: torch.device, model: torch.nn.Module, dim: int):
-    pre  = resize_cube(normalize01(pre_arr), dim)
-    post = resize_cube(normalize01(post_arr), dim)
-    pre_t  = torch.from_numpy(pre)[None, None, ...].to(device)
-    post_t = torch.from_numpy(post)[None, None, ...].to(device)
-    flow_t = model(pre_t, post_t)                    # (1,3,D,H,W)
-    flow   = flow_t.detach().cpu().numpy()[0]        # (3,D,H,W)
-    mag    = np.linalg.norm(flow, axis=0)            # (D,H,W)
-    mean_mm, max_mm = float(mag.mean()), float(mag.max())
-    return mean_mm, max_mm, mag, flow, pre, post
-
-def slice2d(vol: np.ndarray, axis: str, idx: int) -> np.ndarray:
-    if axis == "axial":   return vol[idx, :, :]
-    if axis == "coronal": return vol[:, idx, :]
-    return vol[:, :, idx]
-
-def draw_triptych_big(pre2d, post2d, heat2d, axis, idx, alpha=0.5):
-    def big_subplot(img, title, overlay=None, alpha=0.5):
-        fig, ax = plt.subplots(figsize=(8.5, 8.5))
-        ax.imshow(img, cmap="gray", origin="lower")
-        if overlay is not None:
-            im = ax.imshow(overlay, origin="lower", alpha=alpha)
-            fig.colorbar(im, ax=ax, shrink=0.72, label="heat")
-        ax.set_title(title); ax.axis("off")
-        st.pyplot(fig); plt.close(fig)
-
-    cols = st.columns([1,1,1])
-    with cols[0]: big_subplot(pre2d,  f"PRE • {axis} {idx}")
-    with cols[1]: big_subplot(post2d, f"POST • {axis} {idx}")
-    with cols[2]: big_subplot(pre2d,  f"Overlay • {axis} {idx}", overlay=heat2d, alpha=alpha)
 
 def compute_gradcam(pre: np.ndarray, post: np.ndarray, device: torch.device, cam_dim: int, view_dim: int):
     """Low-RAM Grad-CAM: downscale to cam_dim^3, compute with grads, then upsample."""
@@ -272,42 +308,48 @@ def compute_gradcam(pre: np.ndarray, post: np.ndarray, device: torch.device, cam
         return cam_np
 
     except MemoryError:
-        st.warning("Grad-CAM ran out of memory. Falling back to flow magnitude.")
+        st.warning("Grad-CAM OOM. Showing flow magnitude instead.")
         return None
     except Exception as e:
-        st.warning(f"Grad-CAM failed: {e}. Falling back to flow magnitude.")
+        st.warning(f"Grad-CAM failed: {e}. Showing flow magnitude instead.")
         return None
 
-# ========== uploads / sample ==========
+# ========== uploads ==========
 c1, c2 = st.columns(2)
 with c1:
     pre_file  = st.file_uploader(
         "Upload PRE (.mnc / .mnc.gz / .nii / .nii.gz)",
         type=["mnc","gz","nii"],
-        disabled=use_sample
+        disabled=False  # can still upload even if sample is toggled
     )
 with c2:
     post_file = st.file_uploader(
         "Upload POST (.mnc / .mnc.gz / .nii / .nii.gz)",
         type=["mnc","gz","nii"],
-        disabled=use_sample
+        disabled=False
     )
 
-sample_pair = find_sample_pair() if use_sample else None
+sample_pair = None
 if use_sample:
+    sample_pair = None
+    # Prefer local sample if present
+    sample_pair = None if not TEST_DIR.exists() else next(((p, q) for p,q in [
+        (TEST_DIR / "pre.mnc",      TEST_DIR / "post.mnc"),
+        (TEST_DIR / "pre.mnc.gz",   TEST_DIR / "post.mnc.gz"),
+        (TEST_DIR / "pre.nii.gz",   TEST_DIR / "post.nii.gz"),
+        (TEST_DIR / "pre.nii",      TEST_DIR / "post.nii"),
+    ] if p.exists() and q.exists()), None)
     if sample_pair:
         st.info(f"Using sample: {sample_pair[0].name} + {sample_pair[1].name}")
     else:
-        st.error("No sample files found in ./Test (expected pre/post with .mnc, .mnc.gz, .nii, or .nii.gz)")
-        use_sample = False  # fall back to uploads
+        st.warning("No sample files found in ./Test/02 (expected pre/post with .mnc | .mnc.gz | .nii | .nii.gz).")
 
+# tag upload only for user files (not shipping sample tag by default)
 tag_file = st.file_uploader("Upload .tag (optional)", type=["tag"]) if (want_tag and not use_sample) else None
 
-run = st.button(
-    "Run Prediction",
-    type="primary",
-    disabled=not (use_sample or (pre_file and post_file))
-)
+# Run button
+can_run = (sample_pair is not None and use_sample) or (pre_file and post_file)
+run = st.button("Run Prediction", type="primary", disabled=not can_run)
 
 # ========== run ONCE ==========
 if run:
@@ -318,10 +360,15 @@ if run:
         with st.status("Loading volumes…", expanded=False) as s:
             if use_sample and sample_pair:
                 pre_arr,  pre_aff,  pre_shape,  pre_stride  = read_minc_path_to_array(sample_pair[0], max_dim=coarse_max_dim)
-                post_arr, post_aff, post_shape, post_stride = read_minc_path_to_array(sample_pair[1], max_dim=coarse_max_dim)
+                post_arr, post_aff, post_shape, post_stride = read_minc_stream_to_array(post_file, max_dim=coarse_max_dim)
+                # If using sample, but user uploaded post too? Keep as is; adjust logic as you prefer.
+                if not use_sample and pre_file and post_file:
+                    pre_arr,  pre_aff,  pre_shape,  pre_stride  = read_minc_stream_to_array(pre_file,  max_dim=coarse_max_dim)
+                    post_arr, post_aff, post_shape, post_stride = read_minc_stream_to_array(post_file, max_dim=coarse_max_dim)
             else:
                 pre_arr,  pre_aff,  pre_shape,  pre_stride  = read_minc_stream_to_array(pre_file,  max_dim=coarse_max_dim)
                 post_arr, post_aff, post_shape, post_stride = read_minc_stream_to_array(post_file, max_dim=coarse_max_dim)
+
             s.update(label=f"Loaded. PRE {pre_shape}→/×{pre_stride}, POST {post_shape}→/×{post_stride}")
 
         with st.status("Running inference…", expanded=False) as s:
@@ -333,7 +380,7 @@ if run:
         gcam = compute_gradcam(pre128, post128, device, cam_dim=CAM_FIXED, view_dim=dim)
         gcam_ok = gcam is not None
 
-        # Optional GT stats (only when user uploaded .tag; we do not bundle sample .tag)
+        # Optional GT stats
         gt_mean = gt_max = None
         if tag_file and parse_tag_file_disk is not None and not use_sample:
             with tempfile.NamedTemporaryFile(suffix=".tag", delete=False) as tmp:
@@ -350,7 +397,7 @@ if run:
         # Store results
         ss.result = {
             "mean_mm": mean_mm, "max_mm": max_mm,
-            "mag": mag,            # (D,H,W) flow magnitude
+            "mag": mag,            # (D,H/W) flow magnitude
             "flow": flow,          # (3,D,H,W)
             "pre": pre128, "post": post128,
             "gt_mean": gt_mean, "gt_max": gt_max,
@@ -424,12 +471,3 @@ if res is not None:
         time.sleep(1.0 / fps)
         ss.last_idx = (ss.last_idx + 1) % (idx_max + 1)
         st.rerun()
-
-    # Export flow (optional)
-    if st.sidebar.toggle("Export flow .npy", value=False, key="export_flow_toggle"):
-        with tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as tmp:
-            np.save(tmp.name, res["flow"]); path = tmp.name
-        with open(path, "rb") as fh:
-            st.download_button("Download flow (.npy)", data=fh, file_name="flow.npy", mime="application/octet-stream")
-        try: os.remove(path)
-        except Exception: pass
